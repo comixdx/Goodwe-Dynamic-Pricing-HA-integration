@@ -2,6 +2,7 @@
 
 Integrare Home Assistant pentru controlul invertoarelor hibride GoodWe ET prin Modbus, cu dispecerizare a bateriei după prețul PZU.
 
+Registrele provin din **GoodWe ARM 745 Modbus Protocol Map, revizia 28.03.2025**.
 
 ---
 
@@ -43,6 +44,8 @@ Integrare Home Assistant pentru controlul invertoarelor hibride GoodWe ET prin M
 ## Instalare
 
 **HACS** → Integrations → meniul din colț → Custom repositories → adaugă URL-ul acestui repo, categoria *Integration* → instalează → repornește Home Assistant.
+
+Pentru a publica repo-ul pe GitHub cu tot cu release-ul pe care îl citește HACS, rulează `./publish.sh` (cere [GitHub CLI](https://cli.github.com) autentificat). Scriptul completează singur `codeowners`, `documentation` și `issue_tracker` în `manifest.json` cu utilizatorul tău.
 
 **Manual** — copiază `custom_components/goodwe_ems/` în `config/custom_components/` și repornește.
 
@@ -105,6 +108,16 @@ Verifică `entity_id`-urile reale în *Developer Tools → States*; se genereaz�
 **Semnele.** Harta ARM 745 nu documentează convenția de semn pentru 35139 (putere activă la contor) și 35182 (putere baterie). Uită-te o dată la card cu bateria vizibil în încărcare și cu surplus injectat în rețea; dacă o săgeată arată invers, comută flagul corespunzător. Dacă folosești în schimb senzorii integrării GoodWe oficiale, `pbattery1` e pozitiv la descărcare, deci acolo îți trebuie `invert_battery: true`.
 
 ---
+
+## Dacă apare „Custom element doesn't exist"
+
+Cardul se înregistrează singur; nu trebuie adăugat manual la *Settings → Dashboards → Resources*. Când totuși nu apare, bisectează:
+
+1. **Deschide `http://ADRESA_HA:8123/goodwe_ems/goodwe-energy-flow-card.js`.** 404 înseamnă că lipsește `custom_components/goodwe_ems/www/` de pe instanță — subfolderul se pierde des la copiere. Dacă fișierul se descarcă, înregistrarea a mers și problema e în browser.
+2. **Testează într-o fereastră incognito.** Frontendul HA rulează un service worker care servește pagina din cache chiar și la `Ctrl+Shift+R`. Dacă în incognito apare, golește *DevTools → Application → Clear site data*.
+3. **Caută în jurnal** linia `Cardul GoodWe Energy Flow este servit la ...`. Absența ei înseamnă că integrarea nu a pornit deloc.
+
+Ca ultimă soluție, adaugă-l manual ca resursă Lovelace de tip *JavaScript Module*, cu URL-ul `/goodwe_ems/goodwe-energy-flow-card.js`. Dubla încărcare nu strică nimic — `customElements.define` e protejat.
 
 ## Servicii
 

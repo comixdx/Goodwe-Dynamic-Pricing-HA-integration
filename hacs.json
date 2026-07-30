@@ -1,0 +1,7 @@
+{
+  "name": "GoodWe EMS",
+  "homeassistant": "2024.10.0",
+  "hacs": "2.0.0",
+  "country": ["RO"],
+  "render_readme": true
+}
