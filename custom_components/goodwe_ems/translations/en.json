@@ -1,0 +1,330 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to the inverter",
+        "description": "GoodWe inverters answer on Modbus slave 247 by default.",
+        "data": {
+          "connection": "Connection type",
+          "host": "Host / IP address",
+          "port": "TCP port",
+          "serial_port": "Serial device",
+          "baudrate": "Baud rate",
+          "slave": "Modbus slave address"
+        }
+      },
+      "battery": {
+        "title": "Battery and price dispatch",
+        "description": "Instantaneous readings (SOC, powers) come from an existing sensor — typically the official GoodWe integration.",
+        "data": {
+          "battery_capacity_kwh": "Usable capacity (fallback, if the BMS doesn't report it)",
+          "max_charge_power_w": "Maximum charge power (W)",
+          "max_discharge_power_w": "Maximum discharge power (W)",
+          "min_soc": "Minimum SOC (%)",
+          "target_soc": "Target SOC when charging (%)",
+          "round_trip_efficiency": "Round-trip efficiency (0–1)",
+          "cycle_cost_lei_mwh": "Cycling cost (RON/MWh)",
+          "soc_entity": "Fallback SOC sensor (optional)",
+          "entsoe_token": "ENTSO-E token (fallback, optional)",
+          "scan_interval": "Poll interval (s)",
+          "enable_dispatch": "Enable price-based dispatch"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the inverter over Modbus.",
+      "host_required": "A host or IP address is required.",
+      "serial_port_required": "A serial device is required.",
+      "target_below_min": "Target SOC must be above the minimum SOC.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This inverter is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Battery and price dispatch",
+        "data": {
+          "battery_capacity_kwh": "Usable capacity (fallback, if the BMS doesn't report it)",
+          "max_charge_power_w": "Maximum charge power (W)",
+          "max_discharge_power_w": "Maximum discharge power (W)",
+          "min_soc": "Minimum SOC (%)",
+          "target_soc": "Target SOC when charging (%)",
+          "round_trip_efficiency": "Round-trip efficiency (0–1)",
+          "cycle_cost_lei_mwh": "Cycling cost (RON/MWh)",
+          "soc_entity": "Fallback SOC sensor (optional)",
+          "entsoe_token": "ENTSO-E token (fallback, optional)",
+          "scan_interval": "Poll interval (s)",
+          "enable_dispatch": "Enable price-based dispatch"
+        }
+      }
+    },
+    "error": {
+      "target_below_min": "Target SOC must be above the minimum SOC."
+    }
+  },
+  "selector": {
+    "connection": {
+      "options": {
+        "tcp": "Modbus TCP",
+        "rtu_over_tcp": "Modbus RTU over TCP",
+        "serial": "Modbus RTU (serial)"
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "export_limit_enable": {
+        "name": "Export limit"
+      },
+      "anti_backflow": {
+        "name": "Anti-backflow"
+      },
+      "charge_discharge_enable": {
+        "name": "Charge/discharge enabled"
+      },
+      "fast_charge": {
+        "name": "Fast charge"
+      },
+      "price_dispatch": {
+        "name": "Price dispatch"
+      }
+    },
+    "number": {
+      "export_limit_power": {
+        "name": "Export limit power"
+      },
+      "ems_power": {
+        "name": "EMS power"
+      },
+      "battery_charge_limit": {
+        "name": "Battery charge limit"
+      },
+      "battery_discharge_limit": {
+        "name": "Battery discharge limit"
+      },
+      "inverter_ac_limit": {
+        "name": "Inverter AC limit"
+      },
+      "min_discharge_soc": {
+        "name": "Minimum discharge SOC"
+      },
+      "max_charge_soc": {
+        "name": "Maximum charge SOC"
+      },
+      "fast_charge_stop_soc": {
+        "name": "Fast charge stop SOC"
+      },
+      "start_charge_soc": {
+        "name": "Forced charge start SOC"
+      },
+      "stop_charge_soc": {
+        "name": "Forced charge stop SOC"
+      }
+    },
+    "select": {
+      "ems_mode": {
+        "name": "EMS mode",
+        "state": {
+          "auto": "Auto (self-consumption)",
+          "charge_pv": "Charge from PV",
+          "discharge_pv": "Discharge + PV",
+          "import_ac": "Import from grid",
+          "export_ac": "Export to grid",
+          "battery_standby": "Battery standby",
+          "charge_bat": "Forced charge",
+          "discharge_bat": "Forced discharge",
+          "stopped": "Stopped"
+        }
+      }
+    },
+    "sensor": {
+      "pv_power": {
+        "name": "PV power"
+      },
+      "inverter_power": {
+        "name": "Inverter power"
+      },
+      "ac_active_power": {
+        "name": "Grid active power"
+      },
+      "load_power": {
+        "name": "Load power"
+      },
+      "backup_load_power": {
+        "name": "Back-up load power"
+      },
+      "battery_power": {
+        "name": "Battery power"
+      },
+      "battery2_power": {
+        "name": "Battery 2 power"
+      },
+      "pv1_power": {
+        "name": "PV1 power"
+      },
+      "pv2_power": {
+        "name": "PV2 power"
+      },
+      "pv3_power": {
+        "name": "PV3 power"
+      },
+      "pv4_power": {
+        "name": "PV4 power"
+      },
+      "ac_reactive_power": {
+        "name": "Reactive power"
+      },
+      "ac_apparent_power": {
+        "name": "Apparent power"
+      },
+      "battery_soc": {
+        "name": "Battery SOC"
+      },
+      "battery_soh": {
+        "name": "Battery SOH"
+      },
+      "battery_capacity": {
+        "name": "Battery rated capacity"
+      },
+      "battery_charge_allow": {
+        "name": "Chargeable energy"
+      },
+      "battery_discharge_allow": {
+        "name": "Dischargeable energy"
+      },
+      "battery_strings": {
+        "name": "Battery strings"
+      },
+      "total_charge_energy": {
+        "name": "Battery total charged"
+      },
+      "total_discharge_energy": {
+        "name": "Battery total discharged"
+      },
+      "energy_charge": {
+        "name": "Battery charged (counter)"
+      },
+      "energy_discharge": {
+        "name": "Battery discharged (counter)"
+      },
+      "pzu_price": {
+        "name": "PZU price"
+      },
+      "pzu_average_today": {
+        "name": "PZU average today"
+      },
+      "pzu_min_today": {
+        "name": "PZU minimum today"
+      },
+      "pzu_max_today": {
+        "name": "PZU maximum today"
+      },
+      "pzu_spread_today": {
+        "name": "PZU spread today"
+      },
+      "pzu_monthly_weighted": {
+        "name": "PZU monthly weighted price"
+      },
+      "dispatch_state": {
+        "name": "Dispatch state",
+        "state": {
+          "idle": "Off",
+          "auto": "Self-consumption",
+          "charge_grid": "Charging from grid",
+          "discharge": "Discharging",
+          "hold": "Holding for peak",
+          "unavailable": "Prices unavailable"
+        }
+      }
+    }
+  },
+  "services": {
+    "set_ems_mode": {
+      "name": "Set EMS mode",
+      "description": "Writes registers 47505/47511/47512.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry",
+          "description": "Required only with several inverters."
+        },
+        "mode": {
+          "name": "Mode",
+          "description": "EMS mode from table 8-16."
+        },
+        "power": {
+          "name": "Power",
+          "description": "Xset value, 0-10000 W."
+        }
+      }
+    },
+    "set_export_limit": {
+      "name": "Set export limit",
+      "description": "Writes the parameter first, then the enable flag.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry",
+          "description": "Required only with several inverters."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Register 47509."
+        },
+        "power": {
+          "name": "Power",
+          "description": "Register 47510, -30000..30000 W."
+        }
+      }
+    },
+    "force_charge": {
+      "name": "Force charge",
+      "description": "EMS mode Charge-BAT with grid top-up.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry",
+          "description": "Required only with several inverters."
+        },
+        "power": {
+          "name": "Power",
+          "description": "Charge power in W."
+        }
+      }
+    },
+    "force_discharge": {
+      "name": "Force discharge",
+      "description": "EMS mode Discharge-BAT.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry",
+          "description": "Required only with several inverters."
+        },
+        "power": {
+          "name": "Power",
+          "description": "Discharge power in W."
+        }
+      }
+    },
+    "stop_forcing": {
+      "name": "Back to auto",
+      "description": "Returns the inverter to self-consumption.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry",
+          "description": "Required only with several inverters."
+        }
+      }
+    },
+    "clear_economic_schedule": {
+      "name": "Clear economic schedule",
+      "description": "Writes register 47533 to clear slots 47515-47530.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry",
+          "description": "Required only with several inverters."
+        }
+      }
+    }
+  }
+}
