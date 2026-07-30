@@ -1,0 +1,1 @@
+# Goodwe-Dynamic-Pricing-HA-integration
