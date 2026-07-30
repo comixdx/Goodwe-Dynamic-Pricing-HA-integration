@@ -2,7 +2,6 @@
 
 Integrare Home Assistant pentru controlul invertoarelor hibride GoodWe ET prin Modbus, cu dispecerizare a bateriei după prețul PZU.
 
-Registrele provin din **GoodWe ARM 745 Modbus Protocol Map, revizia 28.03.2025**.
 
 ---
 
