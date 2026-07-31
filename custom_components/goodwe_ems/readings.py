@@ -56,9 +56,29 @@ _AC_APPARENT_POWER: Final = 35143
 _BACKUP_LOAD_POWER: Final = 35169
 _TOTAL_LOAD_POWER: Final = 35171
 _BATTERY1_POWER: Final = 35182
+
+# Contoarele de energie ale seriei ET, toate U32 în pași de 0,1 kWh. Blocul e
+# citit oricum până la 35212, deci nu costă niciun ciclu Modbus în plus.
+#
+# Alinierea nu e ghicită: 35206, 35209 și 35212 de mai jos fac parte din același
+# bloc și funcționează deja în producție. Dacă harta ar fi decalată, ar fi
+# decalate și ele, iar contorul de încărcare al bateriei ar da valori absurde —
+# ceea ce nu se întâmplă. Verifică totuși o dată producția totală față de app,
+# fiindcă pe câteva firmware-uri 35191 e raportat în pași de 1 kWh, nu 0,1.
+_PV_ENERGY_TOTAL: Final = 35191
+_GRID_EXPORT_TOTAL: Final = 35196
+_GRID_IMPORT_TOTAL: Final = 35199
+
 _ENERGY_CHARGE: Final = 35206
 _ENERGY_DISCHARGE: Final = 35209
 _BATTERY_STRINGS: Final = 35212
+
+# Un registru nepopulat întoarce 0xFFFFFFFF, adică 429 496 729,5 kWh după
+# scalare. Pe un senzor `total_increasing` valoarea aia intră o dată în
+# statisticile de lungă durată și rămâne acolo: graficul de energie e mort
+# până la ștergerea manuală a statisticii. Peste un prag imposibil pentru o
+# instalație rezidențială e mai bine fără senzor decât cu istoricul stricat.
+_MAX_PLAUSIBLE_KWH: Final = 1_000_000
 
 _BATTERY2_POWER: Final = 35264
 _BATTERY_STRINGS2: Final = 35267
@@ -76,6 +96,12 @@ _BMS1_RATED_CAPACITY: Final = 37076
 _BATTERY_CAPACITY_AGG: Final = 10473
 _CHARGE_ALLOW_WH: Final = 10476
 _DISCHARGE_ALLOW_WH: Final = 10478
+
+
+def _counter_kwh(raw: int) -> float | None:
+    """Un contor de energie în pași de 0,1 kWh, sau None dacă e implauzibil."""
+    value = raw / 10
+    return value if 0 <= value < _MAX_PLAUSIBLE_KWH else None
 
 
 @dataclass
@@ -121,6 +147,9 @@ class LiveData:
     total_discharge_energy_kwh: float | None = None
     energy_charge_kwh: float | None = None
     energy_discharge_kwh: float | None = None
+    pv_energy_total_kwh: float | None = None
+    grid_import_energy_kwh: float | None = None
+    grid_export_energy_kwh: float | None = None
 
     errors: list[str] = field(default_factory=list)
 
@@ -207,6 +236,9 @@ class GoodweReader:
             data.energy_charge_kwh = b.u32(_ENERGY_CHARGE) / 10
             data.energy_discharge_kwh = b.u32(_ENERGY_DISCHARGE) / 10
             data.battery_strings = b.u16(_BATTERY_STRINGS)
+            data.pv_energy_total_kwh = _counter_kwh(b.u32(_PV_ENERGY_TOTAL))
+            data.grid_export_energy_kwh = _counter_kwh(b.u32(_GRID_EXPORT_TOTAL))
+            data.grid_import_energy_kwh = _counter_kwh(b.u32(_GRID_IMPORT_TOTAL))
 
         if (b := await self._block(BLOCK_BATTERY2, data)) is not None:
             power = b.s32(_BATTERY2_POWER)

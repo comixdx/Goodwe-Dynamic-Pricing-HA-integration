@@ -237,6 +237,15 @@
       "battery_strings": {
         "name": "Battery strings"
       },
+      "pv_energy_total": {
+        "name": "Total PV generation"
+      },
+      "grid_import_energy": {
+        "name": "Grid energy imported"
+      },
+      "grid_export_energy": {
+        "name": "Grid energy exported"
+      },
       "total_charge_energy": {
         "name": "Battery total charged"
       },

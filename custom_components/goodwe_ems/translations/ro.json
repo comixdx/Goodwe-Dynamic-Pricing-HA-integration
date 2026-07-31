@@ -237,6 +237,15 @@
       "battery_strings": {
         "name": "Module baterie"
       },
+      "pv_energy_total": {
+        "name": "Producție PV totală"
+      },
+      "grid_import_energy": {
+        "name": "Energie importată din rețea"
+      },
+      "grid_export_energy": {
+        "name": "Energie exportată în rețea"
+      },
       "total_charge_energy": {
         "name": "Total încărcat în baterie"
       },

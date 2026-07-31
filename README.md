@@ -150,16 +150,35 @@ card_mod:
     }
 ```
 
+### Tabloul Energy
+
+*Settings → Dashboards → Energy*. Cele patru secțiuni se completează cu:
+
+| Secțiune | Senzor |
+| --- | --- |
+| Grid consumption | `grid_import_energy` |
+| Return to grid | `grid_export_energy` |
+| Solar production | `pv_energy_total` |
+| Battery in / out | `total_charge_energy` / `total_discharge_energy` |
+
+Dacă lista de selecție apare goală, senzorul nu îndeplinește [condițiile din FAQ-ul Energy](https://www.home-assistant.io/docs/energy/faq/#troubleshooting-missing-entities): domeniul `sensor`, `device_class` energie, `state_class` `total` sau `total_increasing` și unitatea kWh. Toți cei de mai sus le îndeplinesc.
+
+**Senzorii de putere nu apar în listă și nu e o defecțiune.** `pv_power`, `ac_active_power` și `load_power` sunt wați cu `state_class: measurement`, ceea ce e corect pentru ce sunt; tabloul Energy consumă exclusiv kWh acumulați. Pentru putere instantanee ai cardul de flux.
+
+Prețul îl legi tot de aici: la *Grid consumption → Use an entity with current price* alege `pzu_price`, care e deja în RON/kWh.
+
+**Verifică o dată producția totală** față de aplicația GoodWe. Pe majoritatea firmware-urilor 35191 raportează în pași de 0,1 kWh, dar există și variante care raportează în kWh întregi — dacă valoarea iese de zece ori mai mică decât în app, acolo e cauza. Contoarele nepopulate sunt deja filtrate: un registru care întoarce 0xFFFFFFFF ar însemna 429 GWh și ar rămâne pe veci în statisticile de lungă durată, așa că peste un prag imposibil senzorul se raportează indisponibil în loc să scrie valoarea.
+
 ### Câștigul lunar nu vine din integrare
 
-`monthly_profit` e singurul câmp al cardului care nu se leagă de un senzor al integrării. Motivul e că integrarea nu are de unde: nu citește un contor de energie exportată, iar registrele ei de energie numără încărcarea și descărcarea bateriei, nu injecția în rețea. Fără câmp, rândul „Câștig luna curentă" pur și simplu nu se desenează.
+`monthly_profit` rămâne singurul câmp al cardului fără senzor gata făcut: integrarea publică acum kilowații injectați, dar nu și leii. Fără câmp, rândul „Câștig luna curentă" pur și simplu nu se desenează.
 
-Dacă îl vrei, îl compui din contorul tău de export și din prețul mediu ponderat pe care îl publică integrarea:
+Îl compui din contorul de export al integrării și din prețul mediu ponderat pe care tot ea îl publică:
 
 ```yaml
 utility_meter:
   export_lunar:
-    source: sensor.CONTORUL_TAU_DE_EXPORT   # kWh injectați în rețea
+    source: sensor.goodwe_ems_energie_exportata_in_retea   # kWh injectați
     cycle: monthly
 
 template:

@@ -117,10 +117,18 @@ LIVE_SENSORS: tuple[GoodweSensorDescription, ...] = (
         entity_category=DIAG,
         value_fn=lambda d: d.soh,
     ),
+    # Cei trei senzori de mai jos sunt kWh, dar nu energie *acumulată*: sunt
+    # cantități stocate, care urcă și coboară. `ENERGY` ar fi fost greșit —
+    # Home Assistant îl acceptă doar cu `total`/`total_increasing`, iar o
+    # valoare care scade ar fi citită ca resetare de contor și ar strica
+    # statisticile. `ENERGY_STORAGE` e clasa pentru „câtă energie e înăuntru
+    # acum" și merge cu `measurement`.
     GoodweSensorDescription(
         key="battery_capacity",
         icon="mdi:battery-heart-variant",
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         entity_category=DIAG,
         value_fn=lambda d: d.total_capacity_kwh,
@@ -128,6 +136,7 @@ LIVE_SENSORS: tuple[GoodweSensorDescription, ...] = (
     GoodweSensorDescription(
         key="battery_charge_allow",
         icon="mdi:battery-arrow-up-outline",
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
@@ -136,6 +145,7 @@ LIVE_SENSORS: tuple[GoodweSensorDescription, ...] = (
     GoodweSensorDescription(
         key="battery_discharge_allow",
         icon="mdi:battery-arrow-down-outline",
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
@@ -149,6 +159,13 @@ LIVE_SENSORS: tuple[GoodweSensorDescription, ...] = (
         value_fn=lambda d: d.battery_strings,
     ),
     # Energie
+    #
+    # Cele trei de mai jos sunt singurele care pot popula tabloul Energy la
+    # secțiunile solar și rețea: acolo intră doar kWh acumulați, iar senzorii
+    # de putere de mai sus, oricât de corecți, nu sunt eligibili niciodată.
+    _energy("pv_energy_total", "pv_energy_total_kwh", icon="mdi:solar-power-variant"),
+    _energy("grid_import_energy", "grid_import_energy_kwh", icon="mdi:home-import-outline"),
+    _energy("grid_export_energy", "grid_export_energy_kwh", icon="mdi:home-export-outline"),
     _energy("total_charge_energy", "total_charge_energy_kwh", icon="mdi:battery-plus"),
     _energy("total_discharge_energy", "total_discharge_energy_kwh", icon="mdi:battery-minus"),
     _energy("energy_charge", "energy_charge_kwh", entity_registry_enabled_default=False),
@@ -290,7 +307,7 @@ class DispatchStateSensor(GoodweEmsEntity, SensorEntity):
     """Ce face motorul de dispecerizare acum și de ce."""
 
     _attr_icon = "mdi:calendar-clock"
-    _attr_device_class = "enum"
+    _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [
         DISPATCH_IDLE,
         DISPATCH_AUTO,
