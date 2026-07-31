@@ -1,0 +1,42 @@
+# publish.sh face `git add -A`, deci tot ce nu e ignorat aici ajunge în repo-ul
+# public și în arhiva de release pe care o descarcă HACS. Lista e scurtă
+# intenționat: acoperă ce produc rularea testelor și editoarele, nimic din ce
+# trebuie livrat. Atenție la www/ — cardul .js e cod care se livrează.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+build/
+dist/
+venv/
+.venv/
+env/
+
+# Teste și acoperire
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Copia de siguranță pe care publish.sh o face manifestului. O șterge singur,
+# dar dacă `sed` sau validarea JSON pică între timp, fișierul rămâne pe disc
+# și ar fi urcat la următoarea rulare.
+*.bak
+
+# Editoare și sisteme de fișiere
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code: settings.json se poate versiona și împărți cu ceilalți,
+# settings.local.json e al mașinii curente.
+.claude/settings.local.json
