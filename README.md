@@ -37,7 +37,7 @@ Registrele provin din **GoodWe ARM 745 Modbus Protocol Map, revizia 28.03.2025**
 
 **Dispecerizare pe preț** — motorul caută fereastra ieftină de încărcare și fereastra scumpă de descărcare, verifică dacă marja acoperă costul de ciclare, și rescrie comanda EMS la fiecare ciclu.
 
-**Card Lovelace** — diagramă de flux energetic cu animație, preț PZU curent și câștig lunar. E servit din integrare, deci nu ai nevoie de un al doilea repo HACS.
+**Card Lovelace** — diagramă de flux energetic cu animație, preț PZU curent și câștig lunar. E servit din integrare, deci nu ai nevoie de un al doilea repo HACS, și își găsește singur entitățile.
 
 ---
 
@@ -95,22 +95,60 @@ Există o capcană: pe modelele care nu populează 10476/10478, registrele înto
 
 ## Cardul
 
+Nu apare singur pe niciun tablou: integrarea doar îl servește, tu îl adaugi o dată. *Tablou → Editează → Adaugă card*, caută **GoodWe Energy Flow Card**. Dacă tocmai ai instalat integrarea, reîncarcă pagina întâi — scriptul se injectează la pornirea Home Assistant, iar frontendul ține pagina în cache.
+
+Atât e de ajuns:
+
 ```yaml
 type: custom:goodwe-energy-flow-card
 title: Flux energetic
-pv_power: sensor.goodwe_ems_pv_power
-load_power: sensor.goodwe_ems_load_power
-grid_power: sensor.goodwe_ems_grid_active_power
-battery_power: sensor.goodwe_ems_battery_power
-battery_soc: sensor.goodwe_ems_battery_soc
-pzu_price: sensor.goodwe_ems_pzu_price
-monthly_profit: sensor.castig_lunar  # opțional, îl faci tu — vezi mai jos
-invert_grid: false
-invert_battery: false
+```
+
+**Entitățile se descoperă singure.** Cardul citește registrul de entități, ia entitățile platformei `goodwe_ems` și le potrivește după cheia de traducere, nu după `entity_id`. Asta contează pentru că Home Assistant compune `entity_id`-ul din numele *tradus* al entității în momentul creării: pe o instanță în română senzorul de putere PV se numește `sensor.goodwe_ems_putere_pv`, nu `sensor.goodwe_ems_pv_power`. O listă scrisă de mână în YAML merge doar în limba în care a fost scrisă.
+
+Orice câmp scris explicit are prioritate — descoperirea umple doar golurile:
+
+```yaml
+type: custom:goodwe-energy-flow-card
+title: Flux energetic
+battery_power: sensor.pbattery1        # senzorul integrării GoodWe oficiale
+invert_battery: true                  # `pbattery1` e pozitiv la descărcare
+monthly_profit: sensor.castig_lunar   # opțional, îl faci tu — vezi mai jos
 min_flow_watts: 30
 ```
 
-Verifică `entity_id`-urile reale în *Developer Tools → States*; se generează din numele dispozitivului, care poate diferi de exemplul de mai sus.
+**Cu două invertoare** cardul ar amesteca entitățile, așa că ia un singur grup: cel mai complet. Pentru al doilea, dă-i intrarea de configurare — `config_entry_id`, din URL-ul paginii integrării (`.../config/integrations/integration/goodwe_ems` → click pe intrare):
+
+```yaml
+type: custom:goodwe-energy-flow-card
+config_entry_id: 01JD7Q...
+```
+
+Când un câmp rămâne fără entitate, cardul scrie sub diagramă exact care — nu desenează zero în tăcere.
+
+### Invertorul din mijloc
+
+Schema e un romb, ca la cardul *Energy distribution* din Home Assistant: soare sus, rețea stânga, consumatori dreapta, baterie jos, fiecare nod cu inelul lui colorat și cu puterea scrisă înăuntru. Diferența e nodul din centru: cardul din Home Assistant lucrează cu energie contorizată, unde nu contează pe unde trece, iar liniile se întâlnesc într-un simplu punct. Aici contează — la un invertor hibrid fiecare kilowatt trece fizic prin invertor, iar o săgeată directă PV → casă ar arăta un traseu care nu există.
+
+Dacă vrei totuși exact aspectul din Home Assistant, scoate-l:
+
+```yaml
+type: custom:goodwe-energy-flow-card
+show_inverter: false
+```
+
+Culorile inelelor se pot rescrie din temă, dacă nu-ți place paleta implicită:
+
+```yaml
+card_mod:
+  style: |
+    :host {
+      --goodwe-pv-color: #f5a623;
+      --goodwe-grid-color: #5a9fd4;
+      --goodwe-load-color: #3fc4c4;
+      --goodwe-battery-color: #e5559f;
+    }
+```
 
 ### Câștigul lunar nu vine din integrare
 
@@ -132,9 +170,11 @@ template:
         state_class: measurement
         state: >
           {% set kwh = states('sensor.export_lunar') | float(0) %}
-          {% set lei_mwh = states('sensor.goodwe_ems_pzu_monthly_weighted') | float(0) %}
+          {% set lei_mwh = states('sensor.goodwe_ems_pret_mediu_ponderat_lunar') | float(0) %}
           {{ (kwh * lei_mwh / 1000) | round(2) }}
 ```
+
+Aici `entity_id`-ul îl scrii tu, deci verifică-l în *Developer Tools → States*. Cel din exemplu e forma de pe o instanță în română; în engleză senzorul e `sensor.goodwe_ems_pzu_monthly_weighted_price`. Descoperirea automată acoperă doar câmpurile cardului, nu șabloanele tale.
 
 **E o estimare, nu suma de pe factură.** OPCOM publică prețul mediu ponderat al unei luni abia la începutul lunii următoare, deci `pzu_monthly_weighted` conține luna trecută, iar `export_lunar` numără luna curentă. Cât timp luna e în curs, înmulțești kilowații de acum cu prețul de luna trecută. Valoarea se așază pe cea reală abia după ce OPCOM publică, iar Ordinul ANRE 15/2022 cere prețul lunii proprii. Formula e aceeași cu `monthly_settlement()` din `pzu_prices.py`.
 
