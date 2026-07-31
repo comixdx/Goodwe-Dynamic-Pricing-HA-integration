@@ -27,8 +27,6 @@ _LOGGER = logging.getLogger(__name__)
 RO_TZ = ZoneInfo("Europe/Bucharest")
 
 OPCOM_HOME = "https://www.opcom.ro/pp/index.php"
-OPCOM_MONTHLY_PDF = "https://www.opcom.ro/uploads/doc/rapoarte/lunar/R_{yy}{mm}_RO.pdf"
-OPCOM_WEEKLY_PDF = "https://www.opcom.ro/uploads/doc/rapoarte/saptaminal/RSS_{yyyy}_{ww}_RO.pdf"
 ENTSOE_API = "https://web-api.tp.entsoe.eu/api"
 ENTSOE_DOMAIN = "10YRO-TEL------P"
 
@@ -134,10 +132,6 @@ class PriceSeries:
             chunk = self.values[i : i + MTU_PER_HOUR]
             out.append(sum(chunk) / len(chunk))
         return out
-
-    def ranked_indices(self) -> list[int]:
-        """Indecșii MTU sortați crescător după preț."""
-        return sorted(range(len(self.values)), key=lambda i: self.values[i])
 
     @property
     def average(self) -> float:
@@ -457,17 +451,6 @@ async def async_fetch_monthly_weighted_price(
     return (price, match.group(1).strip()) if price is not None else None
 
 
-def monthly_report_url(day: date) -> str:
-    """URL-ul raportului lunar PDF, pentru verificare manuală."""
-    return OPCOM_MONTHLY_PDF.format(yy=f"{day.year % 100:02d}", mm=f"{day.month:02d}")
-
-
-def weekly_report_url(day: date) -> str:
-    """URL-ul raportului săptămânal PDF, pentru verificare manuală."""
-    year, week, _ = day.isocalendar()
-    return OPCOM_WEEKLY_PDF.format(yyyy=year, ww=f"{week:02d}")
-
-
 # --------------------------------------------------------------------------
 # Ajutoare pentru card și decontare
 # --------------------------------------------------------------------------
@@ -479,7 +462,14 @@ def lei_per_kwh(price_per_mwh: float) -> float:
 
 
 def monthly_settlement(exported_kwh: float, weighted_price_per_mwh: float) -> float:
-    """Câștigul lunar al prosumatorului, în lei."""
+    """Câștigul lunar al prosumatorului, în lei.
+
+    Integrarea nu poate calcula ea însăși valoarea: nu citește un contor de
+    energie exportată, iar registrele de energie ale invertorului numără
+    încărcarea și descărcarea bateriei, nu injecția în rețea. Formula stă aici
+    ca referință pentru șablonul din README, care alimentează câmpul
+    `monthly_profit` al cardului.
+    """
     return exported_kwh * lei_per_kwh(weighted_price_per_mwh)
 
 

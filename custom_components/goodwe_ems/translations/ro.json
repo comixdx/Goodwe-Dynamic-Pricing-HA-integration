@@ -27,7 +27,8 @@
           "soc_entity": "Senzor SOC de rezervă (opțional)",
           "entsoe_token": "Token ENTSO-E (rezervă, opțional)",
           "scan_interval": "Interval de interogare (s)",
-          "enable_dispatch": "Activează dispecerizarea pe preț"
+          "enable_dispatch": "Activează dispecerizarea pe preț",
+          "hold_for_peak": "Păstrează energia pentru vârful de seară"
         }
       }
     },
@@ -57,7 +58,8 @@
           "soc_entity": "Senzor SOC de rezervă (opțional)",
           "entsoe_token": "Token ENTSO-E (rezervă, opțional)",
           "scan_interval": "Interval de interogare (s)",
-          "enable_dispatch": "Activează dispecerizarea pe preț"
+          "enable_dispatch": "Activează dispecerizarea pe preț",
+          "hold_for_peak": "Păstrează energia pentru vârful de seară"
         }
       }
     },

@@ -12,7 +12,7 @@
  * import/export cere doar animation-direction, nu redesenarea traseului.
  */
 
-const CARD_VERSION = "1.1.1";
+const CARD_VERSION = "1.1.2";
 
 const HUB = { x: 200, y: 165 };
 const NODES = {
@@ -81,7 +81,11 @@ class GoodweEnergyFlowCard extends HTMLElement {
       battery_power: "sensor.goodwe_ems_battery_power",
       battery_soc: "sensor.goodwe_ems_battery_soc",
       pzu_price: "sensor.goodwe_ems_pzu_price",
-      monthly_profit: "sensor.castig_lunar",
+      // `monthly_profit` lipsește intenționat: integrarea nu citește un contor
+      // de energie exportată, deci nu poate produce singură câștigul lunar.
+      // E un senzor de făcut cu un șablon — rețeta e în README. Pus aici cu o
+      // valoare implicită, ar fi arătat un avertisment de entitate lipsă
+      // oricui adaugă cardul din galerie.
     };
   }
 
@@ -171,10 +175,14 @@ class GoodweEnergyFlowCard extends HTMLElement {
           ${this._node("load")}
           ${this._hub()}
         </svg>
-        <div class="footer">
+        ${
+          c.monthly_profit
+            ? `<div class="footer">
           <span>Câștig luna curentă</span>
           <span class="profit" id="profit">—</span>
-        </div>
+        </div>`
+            : ""
+        }
         <div class="warn" id="warn" style="display:none"></div>
       </ha-card>
     `;
@@ -336,7 +344,9 @@ class GoodweEnergyFlowCard extends HTMLElement {
   }
 
   _updateProfit(missing) {
+    // Rândul e desenat doar când `monthly_profit` e configurat.
     const el = this.shadowRoot.getElementById("profit");
+    if (!el) return;
     const profit = this._num(this._config.monthly_profit, missing);
     el.textContent = profit === null ? "—" : `${this._fmt(profit, 2)} lei`;
   }

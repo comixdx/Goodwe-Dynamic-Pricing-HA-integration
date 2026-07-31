@@ -231,10 +231,18 @@ class GoodweInverter:
 
     async def async_set_fast_charge(self, enabled: bool, stop_soc: int | None = None) -> None:
         if stop_soc is not None:
-            await self._client.async_write_verified(
-                REG_FAST_CHARGE_STOP_SOC, _clamp(stop_soc, 1, 100)
-            )
+            await self.async_set_fast_charge_stop_soc(stop_soc)
         await self._client.async_write_verified(REG_FAST_CHARGE_ENABLE, int(enabled))
+
+    async def async_set_fast_charge_stop_soc(self, percent: int) -> None:
+        """Doar pragul de oprire (47546), fără a atinge activarea (47545).
+
+        Separat de `async_set_fast_charge` pentru că reglarea pragului nu are
+        voie să pornească încărcarea din rețea ca efect secundar.
+        """
+        await self._client.async_write_verified(
+            REG_FAST_CHARGE_STOP_SOC, _clamp(percent, 1, 100)
+        )
 
     # ----------------------------------------------------------------------
     # 4. Limite și praguri

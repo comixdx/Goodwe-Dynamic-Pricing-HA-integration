@@ -41,7 +41,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CARD_URL = "/goodwe_ems/goodwe-energy-flow-card.js"
 CARD_FILENAME = "goodwe-energy-flow-card.js"
-CARD_VERSION = "1.1.1"  # trebuie să corespundă cu CARD_VERSION din fișierul .js
+CARD_VERSION = "1.1.2"  # trebuie să corespundă cu CARD_VERSION din fișierul .js
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

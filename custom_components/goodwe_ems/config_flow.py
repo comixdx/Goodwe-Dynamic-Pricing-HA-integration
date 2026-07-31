@@ -16,6 +16,7 @@ from .const import (
     CONF_CYCLE_COST,
     CONF_ENABLE_DISPATCH,
     CONF_ENTSOE_TOKEN,
+    CONF_HOLD_FOR_PEAK,
     CONF_HOST,
     CONF_MAX_CHARGE_POWER,
     CONF_MAX_DISCHARGE_POWER,
@@ -32,6 +33,7 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY,
     DEFAULT_BAUDRATE,
     DEFAULT_CYCLE_COST,
+    DEFAULT_HOLD_FOR_PEAK,
     DEFAULT_MAX_CHARGE_POWER,
     DEFAULT_MAX_DISCHARGE_POWER,
     DEFAULT_MIN_SOC,
@@ -111,6 +113,10 @@ def _battery_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             ): vol.All(int, vol.Range(min=10, max=600)),
             vol.Required(
                 CONF_ENABLE_DISPATCH, default=d.get(CONF_ENABLE_DISPATCH, False)
+            ): bool,
+            vol.Required(
+                CONF_HOLD_FOR_PEAK,
+                default=d.get(CONF_HOLD_FOR_PEAK, DEFAULT_HOLD_FOR_PEAK),
             ): bool,
         }
     )

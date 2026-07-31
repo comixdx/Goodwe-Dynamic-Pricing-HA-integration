@@ -68,6 +68,7 @@ Apoi *Settings → Devices & Services → Add Integration → GoodWe EMS*.
 | Cost de ciclare | uzura per MWh ciclat; sub acest prag arbitrajul e în pierdere |
 | Senzor SOC | vezi mai jos |
 | Token ENTSO-E | opțional, se cere gratuit la transparency@entsoe.eu |
+| Păstrează energia pentru vârf | vezi mai jos |
 
 ### Capacitatea și SOC-ul se citesc singure
 
@@ -81,6 +82,12 @@ Două constrângeri diferite, aplicată cea mai strânsă:
 - **BMS-ul, acum** — registrele 10476 și 10478 raportează energia pe care pachetul o acceptă în acest moment, cu derating de temperatură și limite de celulă deja incluse.
 
 A doua e mai bună decât aritmetica pe SOC, care presupune o baterie ideală. Într-o dimineață de iarnă, `capacitate × SOC` promite 6 kWh de încărcare, iar BMS-ul acceptă 1,5 kWh; motorul planifică fereastra pe 1,5.
+
+### Păstrarea energiei pentru vârf
+
+Implicit, între încărcarea ieftină și vârful de seară bateria rămâne în autoconsum: alimentează casa cu energia cumpărată la 180 lei în loc s-o vândă la 1250. Cu opțiunea activată, în intervalul dintre ele bateria trece în standby și casa trage din rețea, iar energia se păstrează pentru vârf.
+
+Nu e gratuit: plătești consumul de peste zi la prețul zilei. Merită doar dacă vârful bate prețul curent cu cel puțin costul de ciclare — condiție pe care motorul o verifică singur la fiecare ciclu, deci în zilele plate opțiunea nu face nimic.
 
 Există o capcană: pe modelele care nu populează 10476/10478, registrele întorc zero fără eroare, iar un zero luat de bun ar bloca dispecerizarea permanent. Filtrul e simplu — o baterie nu poate fi simultan plină și goală, deci dacă *ambele* ies zero, ambele sunt marcate indisponibile și se cade înapoi pe politica ta. Zero pe unul singur e credibil și se respectă.
 
@@ -97,13 +104,39 @@ grid_power: sensor.goodwe_ems_grid_active_power
 battery_power: sensor.goodwe_ems_battery_power
 battery_soc: sensor.goodwe_ems_battery_soc
 pzu_price: sensor.goodwe_ems_pzu_price
-monthly_profit: sensor.castig_lunar
+monthly_profit: sensor.castig_lunar  # opțional, îl faci tu — vezi mai jos
 invert_grid: false
 invert_battery: false
 min_flow_watts: 30
 ```
 
 Verifică `entity_id`-urile reale în *Developer Tools → States*; se generează din numele dispozitivului, care poate diferi de exemplul de mai sus.
+
+### Câștigul lunar nu vine din integrare
+
+`monthly_profit` e singurul câmp al cardului care nu se leagă de un senzor al integrării. Motivul e că integrarea nu are de unde: nu citește un contor de energie exportată, iar registrele ei de energie numără încărcarea și descărcarea bateriei, nu injecția în rețea. Fără câmp, rândul „Câștig luna curentă" pur și simplu nu se desenează.
+
+Dacă îl vrei, îl compui din contorul tău de export și din prețul mediu ponderat pe care îl publică integrarea:
+
+```yaml
+utility_meter:
+  export_lunar:
+    source: sensor.CONTORUL_TAU_DE_EXPORT   # kWh injectați în rețea
+    cycle: monthly
+
+template:
+  - sensor:
+      - name: Câștig lunar
+        unique_id: goodwe_castig_lunar
+        unit_of_measurement: RON
+        state_class: measurement
+        state: >
+          {% set kwh = states('sensor.export_lunar') | float(0) %}
+          {% set lei_mwh = states('sensor.goodwe_ems_pzu_monthly_weighted') | float(0) %}
+          {{ (kwh * lei_mwh / 1000) | round(2) }}
+```
+
+**E o estimare, nu suma de pe factură.** OPCOM publică prețul mediu ponderat al unei luni abia la începutul lunii următoare, deci `pzu_monthly_weighted` conține luna trecută, iar `export_lunar` numără luna curentă. Cât timp luna e în curs, înmulțești kilowații de acum cu prețul de luna trecută. Valoarea se așază pe cea reală abia după ce OPCOM publică, iar Ordinul ANRE 15/2022 cere prețul lunii proprii. Formula e aceeași cu `monthly_settlement()` din `pzu_prices.py`.
 
 **Semnele.** Harta ARM 745 nu documentează convenția de semn pentru 35139 (putere activă la contor) și 35182 (putere baterie). Uită-te o dată la card cu bateria vizibil în încărcare și cu surplus injectat în rețea; dacă o săgeată arată invers, comută flagul corespunzător. Dacă folosești în schimb senzorii integrării GoodWe oficiale, `pbattery1` e pozitiv la descărcare, deci acolo îți trebuie `invert_battery: true`.
 

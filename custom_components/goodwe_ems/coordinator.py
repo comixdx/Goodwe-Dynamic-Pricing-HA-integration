@@ -16,6 +16,7 @@ from .const import (
     CONF_CYCLE_COST,
     CONF_ENABLE_DISPATCH,
     CONF_ENTSOE_TOKEN,
+    CONF_HOLD_FOR_PEAK,
     CONF_MAX_CHARGE_POWER,
     CONF_MAX_DISCHARGE_POWER,
     CONF_MIN_SOC,
@@ -25,6 +26,7 @@ from .const import (
     CONF_TARGET_SOC,
     DEFAULT_BATTERY_CAPACITY,
     DEFAULT_CYCLE_COST,
+    DEFAULT_HOLD_FOR_PEAK,
     DEFAULT_MAX_CHARGE_POWER,
     DEFAULT_MAX_DISCHARGE_POWER,
     DEFAULT_MIN_SOC,
@@ -107,11 +109,27 @@ class GoodweEmsCoordinator(DataUpdateCoordinator[GoodweEmsData]):
                 o.get(CONF_ROUND_TRIP_EFFICIENCY, DEFAULT_ROUND_TRIP_EFFICIENCY)
             ),
             cycle_cost_lei_mwh=float(o.get(CONF_CYCLE_COST, DEFAULT_CYCLE_COST)),
+            hold_for_peak=bool(o.get(CONF_HOLD_FOR_PEAK, DEFAULT_HOLD_FOR_PEAK)),
         )
 
     @property
     def dispatch_enabled(self) -> bool:
         return self._dispatch_enabled
+
+    def restore_dispatch_enabled(self, enabled: bool) -> bool:
+        """Reia starea comutatorului după o repornire. True dacă s-a schimbat.
+
+        Opțiunea din configurare doar inițializează comutatorul; starea lui de
+        rulare e sursa de adevăr după aceea, altfel o repornire de Home
+        Assistant oprea dispecerizarea fără ca nimeni s-o fi cerut.
+
+        Nu scrie nimic pe invertor: ciclul următor aplică oricum decizia, iar
+        un `async_auto()` la fiecare pornire ar fi o scriere inutilă.
+        """
+        if self._dispatch_enabled == enabled:
+            return False
+        self._dispatch_enabled = enabled
+        return True
 
     async def async_set_dispatch_enabled(self, enabled: bool) -> None:
         """Comutatorul de dispecerizare. La oprire, invertorul revine în Auto."""
@@ -191,7 +209,12 @@ class GoodweEmsCoordinator(DataUpdateCoordinator[GoodweEmsData]):
     async def _async_maybe_refresh_prices(self) -> None:
         now = datetime.now(RO_TZ)
         series = self._prices.series
-        fresh = series is not None and series.day == now.date()
+        # Condiția trebuie să fie aceeași cu cea din `is_actionable`. Dacă aici
+        # se verifica doar ziua, o serie descărcată la 00:05 ieșea din valabilitate
+        # pe la 18:05, dar rămânea „proaspătă" pentru gardul de mai jos și nu se
+        # mai reîncerca niciodată — dispecerizarea murea tăcut exact peste vârful
+        # de seară, în fiecare zi, pe orice instanță care nu se repornește.
+        fresh = series is not None and series.is_actionable(now)
 
         should_retry = self._last_price_attempt is None or (
             now - self._last_price_attempt > PRICE_RETRY_INTERVAL

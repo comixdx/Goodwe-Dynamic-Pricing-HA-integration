@@ -27,7 +27,9 @@ from goodwe_ems.const import (  # noqa: E402
     DISPATCH_AUTO,
     DISPATCH_CHARGE_GRID,
     DISPATCH_DISCHARGE,
+    DISPATCH_HOLD,
     DISPATCH_UNAVAILABLE,
+    EMS_BATTERY_STANDBY,
 )
 from goodwe_ems.pzu_prices import (  # noqa: E402
     RO_TZ,
@@ -52,6 +54,7 @@ CONFIG = dispatch.DispatchConfig(
     round_trip_efficiency=0.90,
     cycle_cost_lei_mwh=150.0,
 )
+CONFIG_HOLD = dispatch.DispatchConfig(**{**CONFIG.__dict__, "hold_for_peak": True})
 
 
 def _profile(day: date = TODAY) -> list[float]:
@@ -206,6 +209,54 @@ def test_missing_soc_falls_back_to_auto() -> None:
     decision = dispatch.plan(_series(), BatteryState(soc=None), CONFIG)
     assert decision.state == DISPATCH_UNAVAILABLE
     assert decision.ems_mode == 0x0001
+
+
+# --------------------------------------------------------------------------
+# Păstrarea energiei pentru vârf (hold_for_peak)
+# --------------------------------------------------------------------------
+
+
+def test_hold_is_opt_in() -> None:
+    """Fără opțiune, o baterie plină înainte de vârf rămâne în autoconsum."""
+    decision = dispatch.plan(_series(), BatteryState(soc=95), CONFIG, now=_at(16))
+    assert decision.state == DISPATCH_AUTO
+
+
+def test_holds_a_full_battery_for_the_peak() -> None:
+    """Regresie: condiția `charge_window[1] <= index` nu se putea îndeplini.
+
+    Motorul recalculează fereastra de încărcare de la momentul curent înainte,
+    deci sfârșitul ei e mereu în viitor și ramura ieșea moartă indiferent de
+    opțiune. Cazul real e SOC la țintă — nimic de încărcat — cu vârful în față.
+    """
+    decision = dispatch.plan(_series(), BatteryState(soc=95), CONFIG_HOLD, now=_at(16))
+    assert decision.state == DISPATCH_HOLD
+    assert decision.ems_mode == EMS_BATTERY_STANDBY
+    assert decision.power_w == 0
+
+
+def test_hold_yields_to_the_peak_itself() -> None:
+    decision = dispatch.plan(_series(), BatteryState(soc=95), CONFIG_HOLD, now=_at(20))
+    assert decision.state == DISPATCH_DISCHARGE
+
+
+def test_hold_respects_min_soc() -> None:
+    """Nu are ce păstra: sub minim bateria nu are voie să livreze nimic."""
+    decision = dispatch.plan(_series(), BatteryState(soc=15), CONFIG_HOLD, now=_at(16))
+    assert decision.state != DISPATCH_HOLD
+
+
+def test_hold_does_not_block_charging() -> None:
+    """O baterie descărcată încarcă în fereastra ieftină, nu stă pe loc."""
+    decision = dispatch.plan(_series(), BatteryState(soc=20), CONFIG_HOLD, now=_at(2))
+    assert decision.state == DISPATCH_CHARGE_GRID
+
+
+def test_hold_needs_a_worthwhile_peak() -> None:
+    """Dacă vârful nu bate prețul de acum cu marja de ciclare, nu merită."""
+    flat = _series([500.0 + (i % 4) * 5 for i in range(expected_mtu_count(TODAY))])
+    decision = dispatch.plan(flat, BatteryState(soc=95), CONFIG_HOLD, now=_at(16))
+    assert decision.state == DISPATCH_AUTO
 
 
 def test_breakeven_accounts_for_efficiency() -> None:

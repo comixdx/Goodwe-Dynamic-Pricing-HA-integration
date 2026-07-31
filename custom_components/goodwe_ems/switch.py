@@ -8,9 +8,11 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import GoodweEmsCoordinator
@@ -94,17 +96,30 @@ class GoodweEmsSwitch(GoodweEmsEntity, SwitchEntity):
         await self.coordinator.async_request_refresh()
 
 
-class DispatchSwitch(GoodweEmsEntity, SwitchEntity):
+class DispatchSwitch(GoodweEmsEntity, RestoreEntity, SwitchEntity):
     """Pornește sau oprește dispecerizarea pe preț.
 
     E singura entitate care nu corespunde unui registru: starea trăiește în
     coordinator. La oprire, invertorul e readus explicit în modul Auto.
+
+    Coordinatorul o ține doar în memorie, deci starea se reia din ultima stare
+    a entității. Opțiunea `enable_dispatch` din configurare rămâne valoarea de
+    pornire la prima instalare; după aceea comutatorul e sursa de adevăr.
     """
 
     _attr_icon = "mdi:cash-clock"
 
     def __init__(self, coordinator: GoodweEmsCoordinator) -> None:
         super().__init__(coordinator, "price_dispatch")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is None or last.state not in (STATE_ON, STATE_OFF):
+            return
+        if self.coordinator.restore_dispatch_enabled(last.state == STATE_ON):
+            self.async_write_ha_state()
+            await self.coordinator.async_request_refresh()
 
     @property
     def is_on(self) -> bool:

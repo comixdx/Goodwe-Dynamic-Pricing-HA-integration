@@ -27,7 +27,8 @@
           "soc_entity": "Fallback SOC sensor (optional)",
           "entsoe_token": "ENTSO-E token (fallback, optional)",
           "scan_interval": "Poll interval (s)",
-          "enable_dispatch": "Enable price-based dispatch"
+          "enable_dispatch": "Enable price-based dispatch",
+          "hold_for_peak": "Hold charge for the evening peak"
         }
       }
     },
@@ -57,7 +58,8 @@
           "soc_entity": "Fallback SOC sensor (optional)",
           "entsoe_token": "ENTSO-E token (fallback, optional)",
           "scan_interval": "Poll interval (s)",
-          "enable_dispatch": "Enable price-based dispatch"
+          "enable_dispatch": "Enable price-based dispatch",
+          "hold_for_peak": "Hold charge for the evening peak"
         }
       }
     },

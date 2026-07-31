@@ -48,6 +48,7 @@ CONF_CYCLE_COST: Final = "cycle_cost_lei_mwh"
 CONF_SOC_ENTITY: Final = "soc_entity"
 CONF_ENTSOE_TOKEN: Final = "entsoe_token"
 CONF_ENABLE_DISPATCH: Final = "enable_dispatch"
+CONF_HOLD_FOR_PEAK: Final = "hold_for_peak"
 
 DEFAULT_BATTERY_CAPACITY: Final = 10.0
 DEFAULT_MAX_CHARGE_POWER: Final = 4600
@@ -56,6 +57,7 @@ DEFAULT_MIN_SOC: Final = 15
 DEFAULT_TARGET_SOC: Final = 95
 DEFAULT_ROUND_TRIP_EFFICIENCY: Final = 0.90
 DEFAULT_CYCLE_COST: Final = 150.0  # lei/MWh ciclat, uzură + pierderi
+DEFAULT_HOLD_FOR_PEAK: Final = False
 
 # --------------------------------------------------------------------------
 # 1. Limitare export / anti-backflow

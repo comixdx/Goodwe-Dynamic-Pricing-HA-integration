@@ -127,7 +127,7 @@ NUMBERS: tuple[GoodweNumberDescription, ...] = (
         native_step=1,
         entity_category=EntityCategory.CONFIG,
         value_fn=lambda s: s.fast_charge_stop_soc,
-        set_fn=lambda inv, v: inv.async_set_fast_charge(True, int(v)),
+        set_fn=lambda inv, v: inv.async_set_fast_charge_stop_soc(int(v)),
     ),
     GoodweNumberDescription(
         key="start_charge_soc",

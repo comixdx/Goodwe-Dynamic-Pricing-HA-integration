@@ -271,18 +271,30 @@ def plan(
 
     # Între încărcare și vârf: opțional, bateria stă pe loc ca să nu consume
     # în autoconsum energia cumpărată ieftin pentru vârf.
+    #
+    # Condiția nu poate fi „am trecut de fereastra de încărcare": motorul e
+    # fără stare și recalculează fereastra de la `index` înainte, deci
+    # `charge_window[1] > index` întotdeauna, iar ramura ieșea moartă. Situația
+    # reală e că nu mai are ce încărca — SOC la țintă înseamnă zero headroom,
+    # deci `charge_window is None` — și vârful e încă în față. Ramurile de mai
+    # sus au returnat deja dacă suntem într-una dintre ferestre.
+    #
+    # Amânarea merită doar dacă vârful bate prețul de acum cu marja care
+    # acoperă ciclarea; altfel bateria ar sta degeaba în timp ce casa trage din
+    # rețea la un preț la fel de mare.
     if (
         config.hold_for_peak
-        and charge_window is not None
         and discharge_window is not None
-        and charge_window[1] <= index < discharge_window[0]
+        and index < discharge_window[0]
         and soc > config.min_soc
+        and discharge_price is not None
+        and discharge_price - series.values[index] >= breakeven
     ):
         return DispatchDecision(
             DISPATCH_HOLD,
             EMS_BATTERY_STANDBY,
             0,
-            "Păstrez energia pentru vârful de preț",
+            f"Păstrez energia pentru vârful de {discharge_price:.0f} lei/MWh",
             charge_window, discharge_window, charge_price, discharge_price,
         )
 
