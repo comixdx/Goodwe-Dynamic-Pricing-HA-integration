@@ -70,6 +70,9 @@ def build_registers() -> dict[int, int]:
     put32(35169, s32(400))  # backup
     put32(35171, s32(2400))  # consum total
     put32(35182, s32(-500))  # baterie
+    put32(35191, u32(123456))  # 12345,6 kWh producție PV totală
+    put32(35196, u32(78901))  # 7890,1 kWh exportați
+    put32(35199, u32(54321))  # 5432,1 kWh importați
     put32(35206, u32(12345))  # 1234,5 kWh
     put32(35209, u32(9876))
     regs[35212] = 4  # module baterie
@@ -134,6 +137,86 @@ def test_scale_factors(reader) -> None:
     assert data.energy_charge_kwh == pytest.approx(1234.5)
     assert data.charge_allow_kwh == pytest.approx(3.4)  # Wh -> kWh
     assert data.discharge_allow_kwh == pytest.approx(5.1)
+
+
+def test_energy_counters(reader) -> None:
+    """Contoarele care alimentează tabloul Energy, în pași de 0,1 kWh."""
+    r, _ = reader
+    data = asyncio.run(r.async_read())
+    assert data.pv_energy_total_kwh == pytest.approx(12345.6)
+    assert data.grid_export_energy_kwh == pytest.approx(7890.1)
+    assert data.grid_import_energy_kwh == pytest.approx(5432.1)
+
+
+def test_counters_come_from_a_block_already_read(reader) -> None:
+    """Contoarele stau în 35169..35212, deci nu costă nicio tranzacție în plus.
+
+    Dacă cineva le mută pe un bloc propriu, testul cade — la 9600 bps o citire
+    separată pentru trei registre e exact ce încearcă `_block` să evite.
+    """
+    r, client = reader
+    asyncio.run(r.async_read())
+    covering = [
+        (start, count)
+        for start, count in client.reads
+        if start <= 35191 and start + count > 35200
+    ]
+    assert covering == [(35169, 44)]
+
+
+@pytest.mark.parametrize(
+    ("address", "field"),
+    [
+        (35191, "pv_energy_total_kwh"),
+        (35196, "grid_export_energy_kwh"),
+        (35199, "grid_import_energy_kwh"),
+    ],
+)
+def test_unpopulated_counter_is_dropped(address: int, field: str) -> None:
+    """0xFFFFFFFF înseamnă registru nepopulat, nu 429 GWh.
+
+    Valoarea ar intra o dată în statisticile de lungă durată ale unui senzor
+    `total_increasing` și ar rămâne acolo până la ștergerea manuală, așa că
+    lipsa senzorului e preferabilă.
+    """
+    regs = build_registers()
+    regs[address] = regs[address + 1] = 0xFFFF
+    data = asyncio.run(GoodweReader(FakeClient(regs)).async_read())
+    assert getattr(data, field) is None
+
+    # Un contor stricat nu-i ia cu el pe ceilalți doi din același bloc.
+    others = {
+        "pv_energy_total_kwh",
+        "grid_export_energy_kwh",
+        "grid_import_energy_kwh",
+    } - {field}
+    assert all(getattr(data, name) is not None for name in others)
+
+
+def test_zero_counter_is_believed() -> None:
+    """O instalație nou pusă în funcțiune chiar are zero kWh produși."""
+    regs = build_registers()
+    regs[35191] = regs[35192] = 0
+    data = asyncio.run(GoodweReader(FakeClient(regs)).async_read())
+    assert data.pv_energy_total_kwh == 0.0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (9_999_999, 999_999.9),  # sub prag: acceptat
+        (10_000_000, None),  # exact pragul: respins
+    ],
+)
+def test_counter_plausibility_threshold(raw: int, expected: float | None) -> None:
+    """Pragul e la 1 GWh, o valoare pe care o casă nu o atinge niciodată."""
+    regs = build_registers()
+    regs[35191], regs[35192] = u32(raw)
+    data = asyncio.run(GoodweReader(FakeClient(regs)).async_read())
+    if expected is None:
+        assert data.pv_energy_total_kwh is None
+    else:
+        assert data.pv_energy_total_kwh == pytest.approx(expected)
 
 
 def test_second_pack_read_when_present(reader) -> None:
