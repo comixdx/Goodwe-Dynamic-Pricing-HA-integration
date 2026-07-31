@@ -77,7 +77,7 @@ class GoodweEmsCoordinator(DataUpdateCoordinator[GoodweEmsData]):
         self._prices = PzuPriceCoordinator(
             async_get_clientsession(hass), options.get(CONF_ENTSOE_TOKEN) or None
         )
-        self._soc_entity: str | None = options.get(CONF_SOC_ENTITY)
+        self._soc_entity: str | None = options.get(CONF_SOC_ENTITY) or None
         self._dispatch_enabled: bool = bool(options.get(CONF_ENABLE_DISPATCH, False))
         self._last_price_attempt: datetime | None = None
         self._last_monthly_day: date | None = None

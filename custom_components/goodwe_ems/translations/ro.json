@@ -3,41 +3,63 @@
     "step": {
       "user": {
         "title": "Conectare la invertor",
-        "description": "Invertoarele GoodWe răspund implicit pe adresa Modbus 247.",
+        "description": "Home Assistant vorbește direct cu invertorul prin Modbus, în rețeaua ta — contul din cloud SEMS nu e implicat.\n\nCei mai mulți folosesc **Modbus TCP**: invertorul sau dongle-ul lui Wi-Fi/LAN are o adresă IP și doar asta trebuie completat. Alege o variantă serială numai dacă ai legat un adaptor RS485 la portul COM al invertorului.\n\nCompletează doar câmpurile care corespund conexiunii alese; restul sunt ignorate.",
         "data": {
-          "connection": "Tip de conexiune",
-          "host": "Adresă IP / nume gazdă",
+          "connection": "Cum e conectat invertorul?",
+          "host": "Adresa IP a invertorului",
           "port": "Port TCP",
           "serial_port": "Dispozitiv serial",
           "baudrate": "Rată de transfer",
-          "slave": "Adresă slave Modbus"
+          "slave": "Adresă Modbus (slave ID)"
+        },
+        "data_description": {
+          "connection": "Modbus TCP pentru un dongle Wi-Fi sau LAN obișnuit. RTU peste TCP dacă între ele stă un convertor serial-Ethernet (Elfin, USR, Waveshare). Serial dacă adaptorul e conectat direct la mașina pe care rulează Home Assistant.",
+          "host": "Doar pentru TCP. O găsești în lista de dispozitive a routerului sau în aplicația SolarGo, la setările de rețea. Rezervă-i o adresă fixă în router, altfel conexiunea se rupe la următoarea reînnoire de lease. Exemplu: 192.168.1.50",
+          "port": "502 pentru un dongle GoodWe. Schimbă-l doar dacă gateway-ul tău folosește altceva — 8899 e o alternativă frecventă.",
+          "serial_port": "Doar pentru serial. De regulă /dev/ttyUSB0 pe Home Assistant OS. Verifică la Setări › Sistem › Hardware dacă nu ești sigur.",
+          "baudrate": "Doar pentru serial. GoodWe folosește 9600 dacă nu ai schimbat setarea din invertor.",
+          "slave": "247 la aproape toate invertoarele GoodWe. Încearcă 1 doar dacă 247 nu răspunde."
         }
       },
       "battery": {
-        "title": "Baterie și dispecerizare pe preț",
-        "description": "Datele instantanee (SOC, puteri) se preiau dintr-un senzor existent — de regulă integrarea GoodWe oficială.",
+        "title": "Baterie, prețuri și dispecerizare",
+        "description": "Setările de mai jos spun integrării câtă energie poate muta și când merită uzura. Valorile implicite se potrivesc unei baterii casnice de circa 10 kWh, așa că dacă un câmp nu-ți spune nimic, lasă-l așa — totul se poate schimba ulterior din butonul **Configurare** al integrării.\n\nValorile live (starea de încărcare, puterile) se citesc din invertor; nimic de aici nu trebuie să corespundă unui senzor.",
         "data": {
-          "battery_capacity_kwh": "Capacitate utilă (rezervă, dacă BMS-ul nu o raportează)",
-          "max_charge_power_w": "Putere maximă de încărcare (W)",
-          "max_discharge_power_w": "Putere maximă de descărcare (W)",
-          "min_soc": "SOC minim (%)",
-          "target_soc": "SOC țintă la încărcare (%)",
-          "round_trip_efficiency": "Randament dus-întors (0–1)",
-          "cycle_cost_lei_mwh": "Cost de ciclare (lei/MWh)",
-          "soc_entity": "Senzor SOC de rezervă (opțional)",
-          "entsoe_token": "Token ENTSO-E (rezervă, opțional)",
-          "scan_interval": "Interval de interogare (s)",
-          "enable_dispatch": "Activează dispecerizarea pe preț",
-          "hold_for_peak": "Păstrează energia pentru vârful de seară"
+          "battery_capacity_kwh": "Capacitatea utilă a bateriei",
+          "min_soc": "Nu descărca sub",
+          "target_soc": "Încarcă până la",
+          "max_charge_power_w": "Putere maximă de încărcare",
+          "max_discharge_power_w": "Putere maximă de descărcare",
+          "enable_dispatch": "Lasă integrarea să comande invertorul",
+          "hold_for_peak": "Păstrează bateria pentru vârful de seară",
+          "cycle_cost_lei_mwh": "Costul unui ciclu complet",
+          "round_trip_efficiency": "Randament dus-întors",
+          "entsoe_token": "Token ENTSO-E (opțional)",
+          "soc_entity": "Senzor de rezervă pentru starea de încărcare (opțional)",
+          "scan_interval": "Cât de des să citească invertorul"
+        },
+        "data_description": {
+          "battery_capacity_kwh": "De pe eticheta sau fișa tehnică a bateriei — 10 pentru un pachet de 10 kWh. Se folosește doar când BMS-ul bateriei nu își raportează singur capacitatea.",
+          "min_soc": "Rezerva pe care o păstrezi pentru casă. Sub acest nivel bateria nu se mai descarcă; 15% e un echilibru rezonabil între energie utilizabilă și durata de viață.",
+          "target_soc": "Unde se oprește încărcarea în orele ieftine. Trebuie să fie peste rezerva de mai sus. 95% evită ultimele procente, lente și ineficiente.",
+          "max_charge_power_w": "Nu depăși puterea pe baterie a invertorului — în jur de 4600 W la un hibrid de 10 kW. Pune mai puțin dacă vrei o încărcare mai blândă.",
+          "max_discharge_power_w": "De obicei aceeași valoare ca la încărcare.",
+          "enable_dispatch": "Lasă-l dezactivat pentru un start fără riscuri: primești toți senzorii și prețurile, iar în invertor nu se scrie nimic. Când îl activezi, integrarea comută singură între încărcare, descărcare și autoconsum. Există și comutatorul „Dispecerizare pe preț” pentru a schimba oricând.",
+          "hold_for_peak": "Bateria nu se mai descarcă în după-amiaza ieftină, ca energia să fie disponibilă în orele scumpe de seară. Util dacă seara consumi mult; lasă-l oprit dacă preferi să acoperi mereu consumul curent.",
+          "cycle_cost_lei_mwh": "Uzura bateriei, exprimată pe MWh ciclat. Împiedică integrarea să cicleze bateria pentru o diferență de preț prea mică. Estimare rapidă: prețul bateriei ÷ (ciclii garantați × capacitatea în MWh). 150 lei/MWh e un punct de plecare rezonabil; crește valoarea pentru mai puține tranzacții.",
+          "round_trip_efficiency": "Cât din energia stocată recuperezi la descărcare. 0,90 înseamnă 90%, tipic pentru o baterie cu litiu în spatele unui invertor hibrid.",
+          "entsoe_token": "Prețurile pentru ziua următoare vin de la OPCOM PZU și nu cer niciun cont. Un token ENTSO-E gratuit (se cere pe e-mail de la transparency.entsoe.eu) se folosește ca rezervă când OPCOM nu răspunde.",
+          "soc_entity": "Lasă câmpul gol. E necesar doar dacă BMS-ul tău nu raportează starea de încărcare pe Modbus; în acest caz alege orice senzor care arată procentul bateriei.",
+          "scan_interval": "30 de secunde sunt potrivite pentru aproape toată lumea. Mult mai des și unele invertoare încep să ignore cererile Modbus."
         }
       }
     },
     "error": {
-      "cannot_connect": "Invertorul nu a putut fi contactat pe Modbus.",
-      "host_required": "Adresa IP sau numele gazdei sunt obligatorii.",
-      "serial_port_required": "Dispozitivul serial este obligatoriu.",
-      "target_below_min": "SOC-ul țintă trebuie să fie peste SOC-ul minim.",
-      "unknown": "Eroare neașteptată."
+      "cannot_connect": "Invertorul nu a putut fi contactat. Verifică adresa IP și portul, asigură-te că invertorul e în aceeași rețea și închide orice altă aplicație care ține conexiunea Modbus ocupată (SEMS/SolarGo sau o altă integrare Modbus).",
+      "host_required": "Completează adresa IP a invertorului.",
+      "serial_port_required": "Completează dispozitivul serial, de exemplu /dev/ttyUSB0.",
+      "target_below_min": "„Încarcă până la” trebuie să fie peste „Nu descărca sub”.",
+      "unknown": "Eroare neașteptată. Detaliile sunt în jurnalul Home Assistant."
     },
     "abort": {
       "already_configured": "Acest invertor este deja configurat."
@@ -46,33 +68,48 @@
   "options": {
     "step": {
       "init": {
-        "title": "Baterie și dispecerizare pe preț",
+        "title": "Baterie, prețuri și dispecerizare",
+        "description": "Orice setare de aici se poate schimba oricând; integrarea se reîncarcă cu valorile noi. Setările de conexiune nu apar — pentru ele trebuie să ștergi și să adaugi din nou integrarea.",
         "data": {
-          "battery_capacity_kwh": "Capacitate utilă (rezervă, dacă BMS-ul nu o raportează)",
-          "max_charge_power_w": "Putere maximă de încărcare (W)",
-          "max_discharge_power_w": "Putere maximă de descărcare (W)",
-          "min_soc": "SOC minim (%)",
-          "target_soc": "SOC țintă la încărcare (%)",
-          "round_trip_efficiency": "Randament dus-întors (0–1)",
-          "cycle_cost_lei_mwh": "Cost de ciclare (lei/MWh)",
-          "soc_entity": "Senzor SOC de rezervă (opțional)",
-          "entsoe_token": "Token ENTSO-E (rezervă, opțional)",
-          "scan_interval": "Interval de interogare (s)",
-          "enable_dispatch": "Activează dispecerizarea pe preț",
-          "hold_for_peak": "Păstrează energia pentru vârful de seară"
+          "battery_capacity_kwh": "Capacitatea utilă a bateriei",
+          "min_soc": "Nu descărca sub",
+          "target_soc": "Încarcă până la",
+          "max_charge_power_w": "Putere maximă de încărcare",
+          "max_discharge_power_w": "Putere maximă de descărcare",
+          "enable_dispatch": "Lasă integrarea să comande invertorul",
+          "hold_for_peak": "Păstrează bateria pentru vârful de seară",
+          "cycle_cost_lei_mwh": "Costul unui ciclu complet",
+          "round_trip_efficiency": "Randament dus-întors",
+          "entsoe_token": "Token ENTSO-E (opțional)",
+          "soc_entity": "Senzor de rezervă pentru starea de încărcare (opțional)",
+          "scan_interval": "Cât de des să citească invertorul"
+        },
+        "data_description": {
+          "battery_capacity_kwh": "De pe eticheta sau fișa tehnică a bateriei — 10 pentru un pachet de 10 kWh. Se folosește doar când BMS-ul bateriei nu își raportează singur capacitatea.",
+          "min_soc": "Rezerva pe care o păstrezi pentru casă. Sub acest nivel bateria nu se mai descarcă; 15% e un echilibru rezonabil între energie utilizabilă și durata de viață.",
+          "target_soc": "Unde se oprește încărcarea în orele ieftine. Trebuie să fie peste rezerva de mai sus. 95% evită ultimele procente, lente și ineficiente.",
+          "max_charge_power_w": "Nu depăși puterea pe baterie a invertorului — în jur de 4600 W la un hibrid de 10 kW. Pune mai puțin dacă vrei o încărcare mai blândă.",
+          "max_discharge_power_w": "De obicei aceeași valoare ca la încărcare.",
+          "enable_dispatch": "Dezactivat înseamnă doar citire: senzori și prețuri, fără nicio scriere în invertor. Atenție, comutatorul „Dispecerizare pe preț” e setarea vie — căsuța de aici decide doar cum pornește comutatorul.",
+          "hold_for_peak": "Bateria nu se mai descarcă în după-amiaza ieftină, ca energia să fie disponibilă în orele scumpe de seară.",
+          "cycle_cost_lei_mwh": "Uzura bateriei, exprimată pe MWh ciclat. Estimare rapidă: prețul bateriei ÷ (ciclii garantați × capacitatea în MWh). Crește valoarea ca integrarea să tranzacționeze mai rar.",
+          "round_trip_efficiency": "Cât din energia stocată recuperezi la descărcare. 0,90 înseamnă 90%.",
+          "entsoe_token": "Sursă de rezervă pentru prețurile zilei următoare, când OPCOM PZU nu răspunde. Gratuit de la transparency.entsoe.eu.",
+          "soc_entity": "Necesar doar dacă BMS-ul tău nu raportează starea de încărcare pe Modbus. Golește câmpul pentru a reveni la citirea din invertor.",
+          "scan_interval": "30 de secunde sunt potrivite pentru aproape toată lumea. Mult mai des și unele invertoare încep să ignore cererile Modbus."
         }
       }
     },
     "error": {
-      "target_below_min": "SOC-ul țintă trebuie să fie peste SOC-ul minim."
+      "target_below_min": "„Încarcă până la” trebuie să fie peste „Nu descărca sub”."
     }
   },
   "selector": {
     "connection": {
       "options": {
-        "tcp": "Modbus TCP",
-        "rtu_over_tcp": "Modbus RTU peste TCP",
-        "serial": "Modbus RTU (serial)"
+        "tcp": "Modbus TCP — invertorul sau dongle-ul în rețea (cel mai frecvent)",
+        "rtu_over_tcp": "Modbus RTU peste TCP — printr-un convertor serial-Ethernet",
+        "serial": "Modbus RTU — adaptor RS485 conectat la această mașină"
       }
     }
   },
