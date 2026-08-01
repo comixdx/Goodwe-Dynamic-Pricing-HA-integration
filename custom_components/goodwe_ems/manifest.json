@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/alexandru/goodwe-ems-hacs/issues",
   "loggers": ["goodwe"],
   "requirements": ["goodwe==0.4.10", "beautifulsoup4>=4.12", "lxml>=5.0"],
-  "version": "2.0.2"
+  "version": "2.0.3"
 }
