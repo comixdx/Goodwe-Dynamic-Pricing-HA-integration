@@ -1,21 +1,31 @@
-"""Parametrii numerici de control."""
+"""Numeric inverter settings.
+
+These are settings, not telemetry, so they are read once at setup and then only
+when they change -- the same approach the core integration takes. Polling a
+dozen individual settings on every coordinator cycle would multiply the traffic
+to an inverter that does not enjoy being talked to.
+
+A setting whose getter fails at setup is not offered at all: that is how a model
+that does not implement the register makes itself known.
+"""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from goodwe import Inverter, InverterError
 from homeassistant.components.number import (
     NumberDeviceClass,
     NumberEntity,
     NumberEntityDescription,
     NumberMode,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfPower
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfPower
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
     BATTERY_POWER_MAX,
@@ -23,162 +33,249 @@ from .const import (
     EMS_POWER_MAX,
     FEED_POWER_MAX,
     FEED_POWER_MIN,
+    REG_BATTERY_CHARGE_LIMIT,
+    REG_BATTERY_DISCHARGE_LIMIT,
+    REG_FEED_POWER_PARAM,
+    REG_INVERTER_AC_LIMIT,
+    REG_MAX_CHARGE_SOC,
+    REG_MIN_DISCHARGE_SOC,
+    REG_START_CHARGE_SOC,
+    REG_STOP_CHARGE_SOC,
+    SOC_SCALE,
 )
-from .coordinator import GoodweEmsCoordinator
-from .entity import GoodweEmsEntity
-from .inverter import GoodweInverter, InverterState
+from .coordinator import GoodweEmsConfigEntry
+from .ems import GoodweEms
+
+_LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 1
 
 
 @dataclass(frozen=True, kw_only=True)
-class GoodweNumberDescription(NumberEntityDescription):
-    value_fn: Callable[[InverterState], float | None]
-    set_fn: Callable[[GoodweInverter, float], Awaitable[None]]
+class GoodweNumberEntityDescription(NumberEntityDescription):
+    """Describes a GoodWe number entity."""
+
+    getter: Callable[[GoodweEms], Awaitable[float]]
+    setter: Callable[[GoodweEms, float], Awaitable[None]]
+    filter: Callable[[Inverter], bool] = lambda inv: True
 
 
-NUMBERS: tuple[GoodweNumberDescription, ...] = (
-    GoodweNumberDescription(
-        key="export_limit_power",
-        icon="mdi:transmission-tower-export",
+def _setting_unit(inverter: Inverter, setting: str) -> str:
+    """Unit the library declares for a setting, or "" if it has none."""
+    return next((s.unit for s in inverter.settings() if s.id_ == setting), "")
+
+
+def _register(
+    key: str,
+    register: int,
+    minimum: float,
+    maximum: float,
+    step: float = 1,
+    scale: int = 1,
+    **kwargs,
+) -> GoodweNumberEntityDescription:
+    """A setting reached through a raw register, optionally scaled."""
+    return GoodweNumberEntityDescription(
+        key=key,
+        translation_key=key,
+        native_min_value=minimum,
+        native_max_value=maximum,
+        native_step=step,
+        getter=lambda ems, r=register, s=scale: _read_scaled(ems, r, s),
+        setter=lambda ems, value, r=register, s=scale: ems.async_write_register(
+            r, round(value * s)
+        ),
+        **kwargs,
+    )
+
+
+async def _read_scaled(ems: GoodweEms, register: int, scale: int) -> float:
+    return await ems.async_read_register(register) / scale
+
+
+NUMBERS: tuple[GoodweNumberEntityDescription, ...] = (
+    # Export limit in W. Written through the raw register rather than
+    # `set_grid_export_limit`, which refuses negative values -- and a negative
+    # export limit is how forced import is expressed.
+    _register(
+        "export_limit_power",
+        REG_FEED_POWER_PARAM,
+        FEED_POWER_MIN,
+        FEED_POWER_MAX,
+        step=100,
         device_class=NumberDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
-        native_min_value=FEED_POWER_MIN,
-        native_max_value=FEED_POWER_MAX,
-        native_step=100,
         mode=NumberMode.BOX,
-        value_fn=lambda s: s.feed_power_param,
-        set_fn=lambda inv, v: inv.async_set_export_limit_power(int(v)),
+        filter=lambda inv: _setting_unit(inv, "grid_export_limit") != "%",
     ),
-    GoodweNumberDescription(
+    # Export limit as a percentage of rated power, on the models that store it
+    # that way in the same register.
+    _register(
+        "export_limit_percent",
+        REG_FEED_POWER_PARAM,
+        0,
+        200,
+        step=1,
+        native_unit_of_measurement=PERCENTAGE,
+        mode=NumberMode.BOX,
+        filter=lambda inv: _setting_unit(inv, "grid_export_limit") == "%",
+    ),
+    GoodweNumberEntityDescription(
         key="ems_power",
-        icon="mdi:flash",
+        translation_key="ems_power",
         device_class=NumberDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
         native_min_value=0,
         native_max_value=EMS_POWER_MAX,
         native_step=100,
         mode=NumberMode.BOX,
-        value_fn=lambda s: s.ems_power,
-        set_fn=lambda inv, v: inv.async_set_ems_power(int(v)),
+        getter=lambda ems: ems.inverter.read_setting("ems_power_limit"),
+        setter=lambda ems, value: ems.async_set_ems_power(int(value)),
     ),
-    GoodweNumberDescription(
-        key="battery_charge_limit",
-        icon="mdi:battery-arrow-up",
+    _register(
+        "battery_charge_limit",
+        REG_BATTERY_CHARGE_LIMIT,
+        0,
+        BATTERY_POWER_MAX,
+        step=50,
         device_class=NumberDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
-        native_min_value=0,
-        native_max_value=BATTERY_POWER_MAX,
-        native_step=50,
         entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.battery_charge_limit,
-        set_fn=lambda inv, v: inv.async_set_charge_limit(int(v)),
     ),
-    GoodweNumberDescription(
-        key="battery_discharge_limit",
-        icon="mdi:battery-arrow-down",
+    _register(
+        "battery_discharge_limit",
+        REG_BATTERY_DISCHARGE_LIMIT,
+        0,
+        BATTERY_POWER_MAX,
+        step=50,
         device_class=NumberDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
-        native_min_value=0,
-        native_max_value=BATTERY_POWER_MAX,
-        native_step=50,
         entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.battery_discharge_limit,
-        set_fn=lambda inv, v: inv.async_set_discharge_limit(int(v)),
     ),
-    GoodweNumberDescription(
-        key="inverter_ac_limit",
-        icon="mdi:sine-wave",
+    _register(
+        "inverter_ac_limit",
+        REG_INVERTER_AC_LIMIT,
+        0,
+        BATTERY_POWER_MAX,
+        step=50,
         device_class=NumberDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
-        native_min_value=0,
-        native_max_value=BATTERY_POWER_MAX,
-        native_step=50,
         entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.inverter_ac_limit,
-        set_fn=lambda inv, v: inv.async_set_ac_limit(int(v)),
     ),
-    GoodweNumberDescription(
-        key="min_discharge_soc",
-        icon="mdi:battery-low",
+    _register(
+        "min_discharge_soc",
+        REG_MIN_DISCHARGE_SOC,
+        0,
+        100,
         native_unit_of_measurement=PERCENTAGE,
-        native_min_value=0,
-        native_max_value=100,
-        native_step=1,
         entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.min_discharge_soc,
-        set_fn=lambda inv, v: inv.async_set_min_discharge_soc(int(v)),
     ),
-    GoodweNumberDescription(
-        key="max_charge_soc",
-        icon="mdi:battery-high",
+    _register(
+        "max_charge_soc",
+        REG_MAX_CHARGE_SOC,
+        0,
+        100,
         native_unit_of_measurement=PERCENTAGE,
-        native_min_value=0,
-        native_max_value=100,
-        native_step=1,
         entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.max_charge_soc,
-        set_fn=lambda inv, v: inv.async_set_max_charge_soc(int(v)),
     ),
-    GoodweNumberDescription(
+    _register(
+        "start_charge_soc",
+        REG_START_CHARGE_SOC,
+        0,
+        100,
+        step=0.1,
+        scale=SOC_SCALE,
+        native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.CONFIG,
+    ),
+    _register(
+        "stop_charge_soc",
+        REG_STOP_CHARGE_SOC,
+        0,
+        100,
+        step=0.1,
+        scale=SOC_SCALE,
+        native_unit_of_measurement=PERCENTAGE,
+        entity_category=EntityCategory.CONFIG,
+    ),
+    GoodweNumberEntityDescription(
         key="fast_charge_stop_soc",
-        icon="mdi:battery-charging-100",
+        translation_key="fast_charge_stop_soc",
         native_unit_of_measurement=PERCENTAGE,
         native_min_value=1,
         native_max_value=100,
         native_step=1,
         entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.fast_charge_stop_soc,
-        set_fn=lambda inv, v: inv.async_set_fast_charge_stop_soc(int(v)),
+        # Only the threshold. Deliberately not routed through the library's
+        # fast-charge helper, because adjusting the stop point must not start
+        # charging from the grid as a side effect.
+        getter=lambda ems: ems.inverter.read_setting("fast_charging_soc"),
+        setter=lambda ems, value: ems.inverter.write_setting(
+            "fast_charging_soc", int(value)
+        ),
     ),
-    GoodweNumberDescription(
-        key="start_charge_soc",
-        icon="mdi:battery-charging-outline",
+    GoodweNumberEntityDescription(
+        key="battery_discharge_depth",
+        translation_key="battery_discharge_depth",
+        entity_category=EntityCategory.CONFIG,
         native_unit_of_measurement=PERCENTAGE,
         native_min_value=0,
-        native_max_value=100,
-        native_step=0.1,
-        entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.start_charge_soc,
-        set_fn=lambda inv, v: inv.async_set_start_charge_soc(v),
-    ),
-    GoodweNumberDescription(
-        key="stop_charge_soc",
-        icon="mdi:battery-charging-outline",
-        native_unit_of_measurement=PERCENTAGE,
-        native_min_value=0,
-        native_max_value=100,
-        native_step=0.1,
-        entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.stop_charge_soc,
-        set_fn=lambda inv, v: inv.async_set_stop_charge_soc(v),
+        native_max_value=99,
+        native_step=1,
+        getter=lambda ems: ems.inverter.get_ongrid_battery_dod(),
+        setter=lambda ems, value: ems.inverter.set_ongrid_battery_dod(int(value)),
     ),
 )
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    config_entry: GoodweEmsConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    coordinator: GoodweEmsCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(GoodweEmsNumber(coordinator, d) for d in NUMBERS)
+    """Set up the number entities from a config entry."""
+    data = config_entry.runtime_data
+    entities: list[NumberEntity] = []
+
+    for description in NUMBERS:
+        if not description.filter(data.inverter):
+            continue
+        try:
+            current = await description.getter(data.ems)
+        except (InverterError, ValueError):
+            _LOGGER.debug("Inverter does not support setting %s", description.key)
+            continue
+        entities.append(
+            GoodweEmsNumber(data.device_info, description, data.ems, current)
+        )
+
+    async_add_entities(entities)
 
 
-class GoodweEmsNumber(GoodweEmsEntity, NumberEntity):
-    entity_description: GoodweNumberDescription
+class GoodweEmsNumber(NumberEntity):
+    """A numeric inverter setting."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    entity_description: GoodweNumberEntityDescription
 
     def __init__(
-        self, coordinator: GoodweEmsCoordinator, description: GoodweNumberDescription
+        self,
+        device_info: DeviceInfo,
+        description: GoodweNumberEntityDescription,
+        ems: GoodweEms,
+        current_value: float,
     ) -> None:
-        super().__init__(coordinator, description.key)
         self.entity_description = description
-
-    @property
-    def native_value(self) -> float | None:
-        state = self.inverter
-        return self.entity_description.value_fn(state) if state else None
-
-    @property
-    def available(self) -> bool:
-        return super().available and self.native_value is not None
+        self._attr_unique_id = (
+            f"{DOMAIN}-{description.key}-{ems.inverter.serial_number}"
+        )
+        self._attr_device_info = device_info
+        self._attr_native_value = float(current_value)
+        self._ems = ems
 
     async def async_set_native_value(self, value: float) -> None:
-        await self.entity_description.set_fn(self.coordinator.inverter, value)
-        await self.coordinator.async_request_refresh()
+        """Write the new value to the inverter."""
+        await self.entity_description.setter(self._ems, value)
+        self._attr_native_value = value
+        self.async_write_ha_state()

@@ -1,10 +1,10 @@
-"""Dispecerizare pe preț: traduce seria PZU în comenzi EMS.
+"""Price dispatch: translate the PZU series into EMS commands.
 
-Motorul e deliberat fără stare persistentă. La fiecare ciclu recalculează
-decizia de la zero din (serie, SOC, configurație) și o rescrie pe invertor.
-Asta rezolvă simultan două probleme: registrele 47511/47512 sunt volatile și se
-pierd la reboot, iar o decizie recalculată nu poate rămâne blocată într-o stare
-învechită dacă un ciclu eșuează.
+The engine is deliberately stateless. Every cycle it recomputes the decision
+from scratch out of (series, SoC, config) and rewrites it to the inverter. That
+solves two problems at once: registers 47511/47512 are volatile and are lost on
+reboot, and a recomputed decision cannot get stuck in a stale state when one
+cycle fails.
 """
 
 from __future__ import annotations
@@ -14,16 +14,14 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 
+from goodwe import EMSMode
+
 from .const import (
     DISPATCH_AUTO,
     DISPATCH_CHARGE_GRID,
     DISPATCH_DISCHARGE,
     DISPATCH_HOLD,
     DISPATCH_UNAVAILABLE,
-    EMS_AUTO,
-    EMS_BATTERY_STANDBY,
-    EMS_CHARGE_BAT,
-    EMS_DISCHARGE_BAT,
 )
 from .pzu_prices import (
     MTU_PER_HOUR,
@@ -37,7 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class DispatchConfig:
-    """Parametrii fizici și economici ai bateriei."""
+    """Physical and economic parameters of the battery."""
 
     capacity_kwh: float
     max_charge_power_w: int
@@ -59,12 +57,12 @@ class DispatchConfig:
 
 @dataclass(frozen=True)
 class BatteryState:
-    """Ce știm despre baterie în acest ciclu.
+    """What we know about the battery this cycle.
 
-    `charge_allow_kwh` și `discharge_allow_kwh` vin din registrele 10476/10478,
-    care raportează energia pe care BMS-ul o permite chiar acum — deja cu
-    derating de temperatură și cu limitele de celulă incluse. Sunt preferabile
-    calculului `capacitate × SOC`, care presupune o baterie ideală.
+    `charge_allow_kwh` and `discharge_allow_kwh` come from the BMS block, which
+    reports the energy the battery will accept or give right now, temperature
+    derating and cell limits already included. They are preferable to
+    `capacity x SoC`, which assumes an ideal battery.
     """
 
     soc: float | None
@@ -75,10 +73,10 @@ class BatteryState:
 
 @dataclass(frozen=True)
 class DispatchDecision:
-    """Ce trebuie scris pe invertor în acest ciclu, plus motivul."""
+    """What to write to the inverter this cycle, and why."""
 
     state: str
-    ems_mode: int
+    ems_mode: EMSMode
     power_w: int
     reason: str
     charge_window: tuple[int, int] | None = None
@@ -92,18 +90,18 @@ class DispatchDecision:
 
 
 def _mtus_for_energy(kwh: float, power_kw: float) -> int:
-    """Câte sferturi de oră durează transferul unei energii la o putere dată."""
+    """How many quarter-hours moving this much energy takes at this power."""
     if kwh <= 0:
         return 0
     return max(1, math.ceil(kwh / power_kw * MTU_PER_HOUR))
 
 
 def _breakeven(config: DispatchConfig) -> float:
-    """Diferența minimă de preț sub care arbitrajul e în pierdere.
+    """Smallest price spread that still leaves arbitrage profitable.
 
-    Un kWh cumpărat la preț `p` livrează doar `p * eficiență` la descărcare, iar
-    ciclul consumă din durata de viață a bateriei. Sub pragul ăsta, profitul
-    teoretic e negativ chiar dacă graficul arată tentant.
+    A kWh bought at price `p` only delivers `p * efficiency` on discharge, and
+    the cycle spends part of the battery's life. Below this threshold the
+    theoretical profit is negative however tempting the curve looks.
     """
     return config.cycle_cost_lei_mwh / max(config.round_trip_efficiency, 0.1)
 
@@ -114,7 +112,7 @@ def _in_window(index: int, window: tuple[int, int] | None) -> bool:
 
 @dataclass(frozen=True)
 class _Windows:
-    """O pereche de ferestre încărcare/descărcare și marja dintre ele."""
+    """A charge/discharge window pair and the margin between them."""
 
     charge_window: tuple[int, int] | None
     charge_price: float | None
@@ -140,10 +138,10 @@ def _windows(
     discharge_mtus: int,
     charge_first: bool,
 ) -> _Windows:
-    """Caută cele două ferestre într-o ordine dată, fără suprapunere.
+    """Find both windows in a given order, without overlap.
 
-    Ferestrele nu se pot suprapune: nu descarci energia pe care abia urmează
-    s-o cumperi, și nu cumperi în intervalul în care ai decis să vinzi.
+    The windows cannot overlap: you do not discharge the energy you are about to
+    buy, and you do not buy during the interval you decided to sell in.
     """
     total = len(series.values)
     cw = dw = None
@@ -175,32 +173,40 @@ def plan(
     config: DispatchConfig,
     now: datetime | None = None,
 ) -> DispatchDecision:
-    """Calculează decizia pentru momentul curent.
+    """Compute the decision for the current moment.
 
-    Repliere sigură: orice lipsă de date sau spread insuficient înseamnă
-    autoconsum (EMS Auto), nu inacțiune. Invertorul rămâne mereu într-o stare
-    explicită cunoscută.
+    Safe fallback: any missing data or insufficient spread means
+    self-consumption (EMS Auto), not inaction. The inverter is always left in an
+    explicit, known state.
     """
     if series is None:
         return DispatchDecision(
-            DISPATCH_UNAVAILABLE, EMS_AUTO, 0, "Prețuri PZU indisponibile sau învechite"
+            DISPATCH_UNAVAILABLE,
+            EMSMode.AUTO,
+            0,
+            "PZU prices unavailable or stale",
         )
     soc = battery.soc
     if soc is None:
         return DispatchDecision(
-            DISPATCH_UNAVAILABLE, EMS_AUTO, 0, "SOC-ul bateriei nu este disponibil"
+            DISPATCH_UNAVAILABLE,
+            EMSMode.AUTO,
+            0,
+            "Battery state of charge is unavailable",
         )
 
     index = series.index_at(now)
     remaining = len(series.values) - index
     if remaining < 2:
-        return DispatchDecision(DISPATCH_AUTO, EMS_AUTO, 0, "Sfârșit de zi de livrare")
+        return DispatchDecision(
+            DISPATCH_AUTO, EMSMode.AUTO, 0, "End of the delivery day"
+        )
 
     breakeven = _breakeven(config)
     capacity = battery.capacity_kwh or config.capacity_kwh
 
-    # Politica utilizatorului și limita instantanee a BMS-ului sunt două
-    # constrângeri diferite; se aplică cea mai strânsă.
+    # The user's policy and the BMS's instantaneous limit are two different
+    # constraints; the tighter one wins.
     headroom_kwh = max(0.0, (config.target_soc - soc) / 100.0 * capacity)
     if battery.charge_allow_kwh is not None:
         headroom_kwh = min(headroom_kwh, battery.charge_allow_kwh)
@@ -214,10 +220,10 @@ def plan(
         _mtus_for_energy(usable_kwh, config.discharge_power_kw), remaining
     )
 
-    # Cele două ordini posibile pentru restul zilei: cumperi apoi vinzi, sau
-    # vinzi ce ai deja apoi reîncarci. Se evaluează amândouă și câștigă marja
-    # mai mare. Fără asta, un ciclu care începe în plin vârf de preț ar căuta
-    # întâi o fereastră de încărcare și ar rata vârful.
+    # Two possible orderings for the rest of the day: buy then sell, or sell
+    # what you already have then recharge. Both are evaluated and the larger
+    # margin wins. Without this, a cycle starting in the middle of a price peak
+    # would look for a charge window first and miss the peak.
     best = max(
         (
             _windows(series, index, charge_mtus, discharge_mtus, charge_first=True),
@@ -231,57 +237,63 @@ def plan(
     discharge_price = best.discharge_price
     margin = best.margin
 
-    # --- decizia ----------------------------------------------------------
+    # --- the decision -----------------------------------------------------
     if _in_window(index, charge_window):
         if soc >= config.target_soc:
-            return _auto(f"SOC {soc:.0f}% a atins ținta de {config.target_soc}%",
-                         charge_window, discharge_window, charge_price, discharge_price)
+            return _auto(
+                f"SoC {soc:.0f}% reached the {config.target_soc}% target",
+                charge_window, discharge_window, charge_price, discharge_price,
+            )
         if margin is None:
-            return _auto("Nu există fereastră de descărcare pentru arbitraj",
-                         charge_window, discharge_window, charge_price, discharge_price)
+            return _auto(
+                "No discharge window to arbitrage against",
+                charge_window, discharge_window, charge_price, discharge_price,
+            )
         if margin < breakeven:
             return _auto(
-                f"Marjă {margin:.0f} < prag {breakeven:.0f} lei/MWh",
+                f"Margin {margin:.0f} < threshold {breakeven:.0f} lei/MWh",
                 charge_window, discharge_window, charge_price, discharge_price,
             )
         return DispatchDecision(
             DISPATCH_CHARGE_GRID,
-            EMS_CHARGE_BAT,
+            EMSMode.CHARGE_BATTERY,
             config.max_charge_power_w,
-            f"Fereastră ieftină ({charge_price:.0f} lei/MWh), marjă {margin:.0f}",
+            f"Cheap window ({charge_price:.0f} lei/MWh), margin {margin:.0f}",
             charge_window, discharge_window, charge_price, discharge_price,
         )
 
     if _in_window(index, discharge_window):
         if soc <= config.min_soc:
-            return _auto(f"SOC {soc:.0f}% la limita minimă de {config.min_soc}%",
-                         charge_window, discharge_window, charge_price, discharge_price)
+            return _auto(
+                f"SoC {soc:.0f}% is at the {config.min_soc}% floor",
+                charge_window, discharge_window, charge_price, discharge_price,
+            )
         if margin is not None and margin < breakeven:
             return _auto(
-                f"Marjă {margin:.0f} < prag {breakeven:.0f} lei/MWh",
+                f"Margin {margin:.0f} < threshold {breakeven:.0f} lei/MWh",
                 charge_window, discharge_window, charge_price, discharge_price,
             )
         return DispatchDecision(
             DISPATCH_DISCHARGE,
-            EMS_DISCHARGE_BAT,
+            EMSMode.DISCHARGE_BATTERY,
             config.max_discharge_power_w,
-            f"Fereastră scumpă ({discharge_price:.0f} lei/MWh)",
+            f"Expensive window ({discharge_price:.0f} lei/MWh)",
             charge_window, discharge_window, charge_price, discharge_price,
         )
 
-    # Între încărcare și vârf: opțional, bateria stă pe loc ca să nu consume
-    # în autoconsum energia cumpărată ieftin pentru vârf.
+    # Between charging and the peak: optionally hold the battery still so
+    # self-consumption does not eat the energy bought cheaply for the peak.
     #
-    # Condiția nu poate fi „am trecut de fereastra de încărcare": motorul e
-    # fără stare și recalculează fereastra de la `index` înainte, deci
-    # `charge_window[1] > index` întotdeauna, iar ramura ieșea moartă. Situația
-    # reală e că nu mai are ce încărca — SOC la țintă înseamnă zero headroom,
-    # deci `charge_window is None` — și vârful e încă în față. Ramurile de mai
-    # sus au returnat deja dacă suntem într-una dintre ferestre.
+    # The condition cannot be "we are past the charge window": the engine is
+    # stateless and recomputes the window from `index` forward, so
+    # `charge_window[1] > index` always held and the branch was dead. The real
+    # situation is that there is nothing left to charge -- SoC at target means
+    # zero headroom, hence `charge_window is None` -- while the peak is still
+    # ahead. The branches above have already returned if we are inside a window.
     #
-    # Amânarea merită doar dacă vârful bate prețul de acum cu marja care
-    # acoperă ciclarea; altfel bateria ar sta degeaba în timp ce casa trage din
-    # rețea la un preț la fel de mare.
+    # Waiting is only worth it if the peak beats the current price by the margin
+    # that covers cycling; otherwise the battery sits idle while the house draws
+    # from the grid at an equally high price.
     if (
         config.hold_for_peak
         and discharge_window is not None
@@ -292,14 +304,16 @@ def plan(
     ):
         return DispatchDecision(
             DISPATCH_HOLD,
-            EMS_BATTERY_STANDBY,
+            EMSMode.BATTERY_STANDBY,
             0,
-            f"Păstrez energia pentru vârful de {discharge_price:.0f} lei/MWh",
+            f"Holding energy for the {discharge_price:.0f} lei/MWh peak",
             charge_window, discharge_window, charge_price, discharge_price,
         )
 
-    return _auto("În afara ferestrelor de arbitraj",
-                 charge_window, discharge_window, charge_price, discharge_price)
+    return _auto(
+        "Outside the arbitrage windows",
+        charge_window, discharge_window, charge_price, discharge_price,
+    )
 
 
 def _auto(
@@ -310,13 +324,13 @@ def _auto(
     discharge_price: float | None = None,
 ) -> DispatchDecision:
     return DispatchDecision(
-        DISPATCH_AUTO, EMS_AUTO, 0, reason,
+        DISPATCH_AUTO, EMSMode.AUTO, 0, reason,
         charge_window, discharge_window, charge_price, discharge_price,
     )
 
 
 def window_label(series: PriceSeries, window: tuple[int, int] | None) -> str | None:
-    """„02:15 - 05:30", pentru atributele senzorului de dispecerizare."""
+    """"02:15 - 05:30", for the dispatch sensor's attributes."""
     if window is None:
         return None
 

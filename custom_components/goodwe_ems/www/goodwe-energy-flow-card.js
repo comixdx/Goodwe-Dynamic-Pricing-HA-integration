@@ -14,24 +14,28 @@
  * animation-direction, nu redesenarea traseului.
  */
 
-const CARD_VERSION = "1.3.0";
+const CARD_VERSION = "1.4.0";
 
 const DOMAIN = "goodwe_ems";
 
-// Câmpul cardului -> `translation_key`-ul entității din integrare.
+// Câmpul cardului -> cheia entității din integrare.
 //
 // `entity_id`-urile nu pot fi ghicite: Home Assistant le compune din numele
-// tradus al entității în momentul creării, deci pe o instanță în română ies
-// `sensor.goodwe_ems_putere_pv`, nu `sensor.goodwe_ems_pv_power`. Cheia de
-// traducere e însă aceeași în orice limbă, iar registrul de entități o expune.
+// entității în momentul creării, iar acela se traduce. Cheia de mai jos e însă
+// stabilă, iar registrul de entități o expune în `unique_id`.
+//
+// Senzorii de telemetrie vin din biblioteca `goodwe`, deci cheile lor sunt
+// id-urile ei de senzor (`ppv`, `house_consumption`, ...), nu numele pe care
+// le folosea harta de registre scrisă de mână. Senzorii proprii integrării
+// (prețul PZU) și-au păstrat cheia.
 //
 // `monthly_profit` lipsește intenționat: e un senzor șablon al utilizatorului,
 // integrarea nu are de unde să-l producă (rețeta e în README).
 const DISCOVERY = {
-  pv_power: "pv_power",
-  load_power: "load_power",
-  grid_power: "ac_active_power",
-  battery_power: "battery_power",
+  pv_power: "ppv",
+  load_power: "house_consumption",
+  grid_power: "active_power",
+  battery_power: "pbattery1",
   battery_soc: "battery_soc",
   pzu_price: "pzu_price",
 };
@@ -200,11 +204,14 @@ class GoodweEnergyFlowCard extends HTMLElement {
       const found = {};
       for (const key of this._unresolved()) {
         const tkey = DISCOVERY[key];
-        // `unique_id` e rezerva pentru cazul în care registrul nu a reținut
-        // cheia de traducere; integrarea îl compune ca `{entry_id}_{cheie}`.
+        // `unique_id` e sursa principală: integrarea îl compune ca
+        // `{domeniu}-{cheie}-{serie}`, iar senzorii generați din biblioteca
+        // `goodwe` nu au deloc cheie de traducere, fiindcă își iau numele de
+        // la ea. `translation_key` rămâne pentru entitățile proprii.
+        const prefix = `${DOMAIN}-${tkey}-`;
         const hit =
-          group.find((e) => e.translation_key === tkey) ||
-          group.find((e) => e.unique_id && e.unique_id.endsWith(`_${tkey}`));
+          group.find((e) => e.unique_id && e.unique_id.startsWith(prefix)) ||
+          group.find((e) => e.translation_key === tkey);
         if (hit) found[key] = hit.entity_id;
       }
 

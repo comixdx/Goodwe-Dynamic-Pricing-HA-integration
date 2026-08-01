@@ -1,53 +1,56 @@
-"""Config flow: conexiune Modbus, apoi parametrii bateriei."""
+"""Config flow: find the inverter, then set the battery parameters.
+
+The connection step asks for an IP address and nothing else. The library probes
+UDP 8899 first and Modbus TCP 502 second, and detects the protocol family from
+the serial number, so port, slave id and transport type are all things the user
+no longer has to know.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from goodwe import Inverter, InverterError, connect
+from goodwe.const import GOODWE_TCP_PORT, GOODWE_UDP_PORT
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
     CONF_BATTERY_CAPACITY,
-    CONF_BAUDRATE,
-    CONF_CONNECTION,
     CONF_CYCLE_COST,
     CONF_ENABLE_DISPATCH,
     CONF_ENTSOE_TOKEN,
     CONF_HOLD_FOR_PEAK,
-    CONF_HOST,
     CONF_MAX_CHARGE_POWER,
     CONF_MAX_DISCHARGE_POWER,
     CONF_MIN_SOC,
-    CONF_PORT,
+    CONF_MODEL_FAMILY,
     CONF_ROUND_TRIP_EFFICIENCY,
     CONF_SCAN_INTERVAL,
-    CONF_SERIAL_PORT,
-    CONF_SLAVE,
     CONF_SOC_ENTITY,
     CONF_TARGET_SOC,
-    CONNECTION_SERIAL,
-    CONNECTION_TCP,
-    CONNECTION_TYPES,
     DEFAULT_BATTERY_CAPACITY,
-    DEFAULT_BAUDRATE,
     DEFAULT_CYCLE_COST,
     DEFAULT_HOLD_FOR_PEAK,
     DEFAULT_MAX_CHARGE_POWER,
     DEFAULT_MAX_DISCHARGE_POWER,
     DEFAULT_MIN_SOC,
     DEFAULT_NAME,
-    DEFAULT_PORT,
     DEFAULT_ROUND_TRIP_EFFICIENCY,
     DEFAULT_SCAN_INTERVAL,
-    DEFAULT_SLAVE,
     DEFAULT_TARGET_SOC,
     DOMAIN,
-    REG_MANUFACTURER_CODE,
 )
-from .modbus import GoodweModbusClient, ModbusError
+
+CONNECTION_SCHEMA = vol.Schema({vol.Required(CONF_HOST): str})
 
 
 def _number(
@@ -57,10 +60,10 @@ def _number(
     unit: str | None = None,
     slider: bool = False,
 ) -> selector.NumberSelector:
-    """Câmp numeric cu limite și unitate vizibile în interfață.
+    """A numeric field whose bounds and unit are visible in the UI.
 
-    Un `int` simplu apare ca o casetă de text fără nicio indicație despre
-    intervalul acceptat, iar utilizatorul află că a greșit abia la trimitere.
+    A plain `int` renders as a text box with no indication of the accepted
+    range, and the user only finds out they were wrong on submit.
     """
     config = selector.NumberSelectorConfig(
         min=minimum,
@@ -73,18 +76,15 @@ def _number(
         ),
     )
     if unit is not None:
-        # Cheia trebuie să lipsească atunci când nu există unitate: schema
-        # selectorului cere un șir, iar None ar arunca vol.Invalid.
+        # The key has to be absent when there is no unit: the selector's schema
+        # requires a string, and None would raise vol.Invalid.
         config["unit_of_measurement"] = unit
     return selector.NumberSelector(config)
 
 
-# NumberSelector întoarce întotdeauna float. pymodbus vrea int pentru port,
-# slave și baudrate, iar registrele de SOC/putere se scriu ca U16.
+# NumberSelector always returns a float, and these all have to be written as
+# integers.
 _INT_KEYS = (
-    CONF_PORT,
-    CONF_BAUDRATE,
-    CONF_SLAVE,
     CONF_MAX_CHARGE_POWER,
     CONF_MAX_DISCHARGE_POWER,
     CONF_MIN_SOC,
@@ -94,56 +94,26 @@ _INT_KEYS = (
 
 
 def _coerce_ints(user_input: dict[str, Any]) -> dict[str, Any]:
-    """Readuce la int valorile pe care selectorul le-a transformat în float."""
+    """Turn back into ints the values the selector made floats."""
     return {
         key: int(value) if key in _INT_KEYS and value is not None else value
         for key, value in user_input.items()
     }
 
 
-def _connection_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
-    d = defaults or {}
-    return vol.Schema(
-        {
-            vol.Required(
-                CONF_CONNECTION, default=d.get(CONF_CONNECTION, CONNECTION_TCP)
-            ): (
-                selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=CONNECTION_TYPES,
-                        translation_key="connection",
-                        mode=selector.SelectSelectorMode.LIST,
-                    )
-                )
-            ),
-            vol.Optional(CONF_HOST, default=d.get(CONF_HOST, "")): str,
-            vol.Optional(CONF_PORT, default=d.get(CONF_PORT, DEFAULT_PORT)): _number(
-                1, 65535
-            ),
-            vol.Optional(CONF_SERIAL_PORT, default=d.get(CONF_SERIAL_PORT, "")): str,
-            vol.Optional(
-                CONF_BAUDRATE, default=d.get(CONF_BAUDRATE, DEFAULT_BAUDRATE)
-            ): _number(1200, 115200, step=1, unit="bps"),
-            vol.Required(CONF_SLAVE, default=d.get(CONF_SLAVE, DEFAULT_SLAVE)): _number(
-                1, 247
-            ),
-        }
-    )
-
-
 class _OptionalEntitySelector(selector.EntitySelector):
-    """EntitySelector care acceptă și „nicio entitate”.
+    """An EntitySelector that also accepts "no entity".
 
-    EntitySelector validează valoarea cu `entity_id_or_uuid`, iar un câmp golit
-    nu trece („Entity is neither a valid entity ID nor a valid UUID”): un
-    formular fără senzor de rezervă era imposibil de trimis. Interfața poate
-    trimite cheia lipsă, `None` sau șirul gol, în funcție de versiune, așa că
-    toate trei sunt tratate la fel.
+    EntitySelector validates with `entity_id_or_uuid`, which an emptied field
+    fails ("Entity is neither a valid entity ID nor a valid UUID"): a form with
+    no fallback sensor was impossible to submit. The UI may send the key
+    missing, `None` or the empty string depending on version, so all three are
+    treated alike.
 
-    Un `vol.Any(selector, "", None)` ar fi părut mai direct, dar
-    voluptuous_serialize nu știe să serializeze o alternativă cu literali, deci
-    formularul nici nu s-ar mai fi afișat. Serializarea aici rămâne cea a
-    clasei de bază.
+    A `vol.Any(selector, "", None)` would have looked more direct, but
+    voluptuous_serialize cannot serialize an alternative containing literals, so
+    the form would not have rendered at all. Serialization here stays the base
+    class's.
     """
 
     def __call__(self, data: Any) -> str:
@@ -153,10 +123,10 @@ class _OptionalEntitySelector(selector.EntitySelector):
 
 
 def _soc_entity_key(current: str | None) -> vol.Marker:
-    """Cheia selectorului: fără `default`, doar cu valoarea deja aleasă.
+    """The selector key: no `default`, only the already-chosen value.
 
-    Un `default=""` era exact ce refuza validarea, iar o valoare sugerată
-    `None` ar ajunge tot acolo.
+    A `default=""` was exactly what validation refused, and a suggested value of
+    `None` ends up in the same place.
     """
     if current:
         return vol.Optional(CONF_SOC_ENTITY, description={"suggested_value": current})
@@ -164,11 +134,11 @@ def _soc_entity_key(current: str | None) -> vol.Marker:
 
 
 def _normalise_soc_entity(user_input: dict[str, Any]) -> dict[str, Any]:
-    """Golirea selectorului trebuie să șteargă entitatea, nu s-o păstreze.
+    """Clearing the selector has to delete the entity, not keep it.
 
-    Opțiunile se citesc ca `{**entry.data, **entry.options}`, deci o cheie
-    absentă din opțiuni lasă în picioare valoarea veche din date. Scriem
-    explicit șirul gol.
+    Options are read as `{**entry.data, **entry.options}`, so a key absent from
+    the options leaves the old value from data standing. Write the empty string
+    explicitly.
     """
     return {**user_input, CONF_SOC_ENTITY: user_input.get(CONF_SOC_ENTITY) or ""}
 
@@ -207,41 +177,31 @@ def _battery_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             ): _number(0, 2000, unit="RON/MWh"),
             vol.Required(
                 CONF_ROUND_TRIP_EFFICIENCY,
-                default=d.get(CONF_ROUND_TRIP_EFFICIENCY, DEFAULT_ROUND_TRIP_EFFICIENCY),
+                default=d.get(
+                    CONF_ROUND_TRIP_EFFICIENCY, DEFAULT_ROUND_TRIP_EFFICIENCY
+                ),
             ): _number(0.5, 1.0, step=0.01),
-            vol.Optional(CONF_ENTSOE_TOKEN, default=d.get(CONF_ENTSOE_TOKEN, "")): str,
-            # Fără filtru pe device_class: instalațiile care au nevoie de rezervă
-            # sunt exact cele care nu au un senzor de baterie declarat ca atare
-            # (template, REST, alt invertor), iar filtrul lăsa lista goală.
+            vol.Optional(
+                CONF_ENTSOE_TOKEN, default=d.get(CONF_ENTSOE_TOKEN, "")
+            ): str,
+            # No device_class filter: the installations that need a fallback are
+            # exactly the ones without a sensor declared as a battery (template,
+            # REST, another inverter), and the filter left the list empty.
             _soc_entity_key(d.get(CONF_SOC_ENTITY)): _OptionalEntitySelector(
                 selector.EntitySelectorConfig(domain="sensor")
             ),
             vol.Required(
-                CONF_SCAN_INTERVAL, default=d.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+                CONF_SCAN_INTERVAL,
+                default=d.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
             ): _number(10, 600, unit="s"),
         }
     )
 
 
-async def _async_probe(data: dict[str, Any]) -> None:
-    """Deschide conexiunea și citește 47505 ca test de viață."""
-    client = GoodweModbusClient(
-        connection=data[CONF_CONNECTION],
-        slave=data[CONF_SLAVE],
-        host=data.get(CONF_HOST) or None,
-        port=data.get(CONF_PORT, DEFAULT_PORT),
-        serial_port=data.get(CONF_SERIAL_PORT) or None,
-        baudrate=data.get(CONF_BAUDRATE, DEFAULT_BAUDRATE),
-    )
-    try:
-        await client.async_connect()
-        await client.async_read_u16(REG_MANUFACTURER_CODE)
-    finally:
-        await client.async_close()
-
-
 class GoodweEmsConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    """Handle a GoodWe EMS config flow."""
+
+    VERSION = 2
 
     def __init__(self) -> None:
         self._connection: dict[str, Any] = {}
@@ -249,41 +209,33 @@ class GoodweEmsConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Find the inverter on the network."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            user_input = _coerce_ints(user_input)
-            if user_input[CONF_CONNECTION] == CONNECTION_SERIAL:
-                if not user_input.get(CONF_SERIAL_PORT):
-                    errors[CONF_SERIAL_PORT] = "serial_port_required"
-            elif not user_input.get(CONF_HOST):
-                errors[CONF_HOST] = "host_required"
-
-            if not errors:
-                try:
-                    await _async_probe(user_input)
-                except ModbusError:
-                    errors["base"] = "cannot_connect"
-                except Exception:  # noqa: BLE001
-                    errors["base"] = "unknown"
-
-            if not errors:
-                unique = (
-                    user_input.get(CONF_SERIAL_PORT)
-                    or f"{user_input.get(CONF_HOST)}:{user_input.get(CONF_PORT)}"
-                )
-                await self.async_set_unique_id(f"{unique}/{user_input[CONF_SLAVE]}")
+            host = user_input[CONF_HOST]
+            try:
+                inverter, port = await self.async_detect_inverter_port(host=host)
+            except InverterError:
+                errors[CONF_HOST] = "cannot_connect"
+            else:
+                await self.async_set_unique_id(inverter.serial_number)
                 self._abort_if_unique_id_configured()
-                self._connection = user_input
+                self._connection = {
+                    CONF_HOST: host,
+                    CONF_PORT: port,
+                    CONF_MODEL_FAMILY: type(inverter).__name__,
+                }
                 return await self.async_step_battery()
 
         return self.async_show_form(
-            step_id="user", data_schema=_connection_schema(user_input), errors=errors
+            step_id="user", data_schema=CONNECTION_SCHEMA, errors=errors
         )
 
     async def async_step_battery(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Battery, price and dispatch parameters."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -302,13 +254,29 @@ class GoodweEmsConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     @staticmethod
+    async def async_detect_inverter_port(host: str) -> tuple[Inverter, int]:
+        """Detect which port the inverter listens on.
+
+        UDP 8899 is what a Wi-Fi/LAN dongle exposes and is by far the common
+        case; Modbus TCP 502 is the fallback for inverters reached through an
+        Ethernet module.
+        """
+        port = GOODWE_UDP_PORT
+        try:
+            inverter = await connect(host=host, port=port, retries=3)
+        except InverterError:
+            port = GOODWE_TCP_PORT
+            inverter = await connect(host=host, port=port, retries=3)
+        return inverter, port
+
+    @staticmethod
     @callback
     def async_get_options_flow(entry: ConfigEntry) -> OptionsFlow:
         return GoodweEmsOptionsFlow()
 
 
 class GoodweEmsOptionsFlow(OptionsFlow):
-    """Parametrii bateriei se pot schimba fără a reconfigura conexiunea."""
+    """Battery parameters can change without reconfiguring the connection."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

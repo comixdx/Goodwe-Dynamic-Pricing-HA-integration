@@ -3,22 +3,12 @@
     "step": {
       "user": {
         "title": "Connect to your inverter",
-        "description": "Home Assistant talks to the inverter directly over Modbus, on your own network — the SEMS cloud account is not involved.\n\nMost people use **Modbus TCP**: the inverter or its Wi-Fi/LAN dongle has an IP address, and that is all you need. Pick a serial option only if you wired an RS485 adapter to the inverter's COM port.\n\nFill in only the fields that match the connection you chose; the others are ignored.",
+        "description": "Home Assistant talks to the inverter directly on your own network — the SEMS cloud account is not involved.\n\nAll it needs is the inverter's IP address. The protocol, port and family are detected automatically.",
         "data": {
-          "connection": "How is the inverter connected?",
-          "host": "Inverter IP address",
-          "port": "TCP port",
-          "serial_port": "Serial device",
-          "baudrate": "Baud rate",
-          "slave": "Modbus address (slave ID)"
+          "host": "Inverter IP address"
         },
         "data_description": {
-          "connection": "Modbus TCP for a normal Wi-Fi or LAN dongle. RTU over TCP if a serial-to-Ethernet gateway (Elfin, USR, Waveshare) sits in between. Serial if the adapter is plugged into the machine running Home Assistant.",
-          "host": "TCP only. Look it up in your router's device list, or in the SolarGo app under network settings. Reserve a fixed address for it in the router, otherwise the connection breaks the next time the lease changes. Example: 192.168.1.50",
-          "port": "502 for a GoodWe dongle. Change it only if your gateway uses something else — 8899 is a common alternative.",
-          "serial_port": "Serial only. Usually /dev/ttyUSB0 on Home Assistant OS. Check Settings › System › Hardware if unsure.",
-          "baudrate": "Serial only. GoodWe uses 9600 unless you changed it on the inverter.",
-          "slave": "247 on virtually every GoodWe inverter. Try 1 only if 247 does not answer."
+          "host": "Look it up in your router's device list, or in the SolarGo app under network settings. Reserve a fixed address for it in the router, otherwise the connection breaks the next time the lease changes. Example: 192.168.1.50"
         }
       },
       "battery": {
@@ -49,17 +39,14 @@
           "cycle_cost_lei_mwh": "Battery wear, expressed per MWh cycled. It stops the integration from cycling the battery for a price difference too small to be worth it. Rough estimate: battery price ÷ (warranted cycles × capacity in MWh). 150 RON/MWh is a reasonable starting point; raise it to trade less.",
           "round_trip_efficiency": "How much of the stored energy you get back out. 0.90 means 90%, typical for a lithium battery behind a hybrid inverter.",
           "entsoe_token": "Day-ahead prices come from OPCOM PZU and need no account. A free ENTSO-E token (request one by email from transparency.entsoe.eu) is used as a fallback when OPCOM cannot be reached.",
-          "soc_entity": "Leave this empty. It is only needed if your BMS does not report state of charge over Modbus, in which case pick any sensor that shows the battery percentage.",
-          "scan_interval": "30 seconds suits almost everyone. Much faster and some inverters start ignoring Modbus requests."
+          "soc_entity": "Leave this empty. It is only needed if your BMS does not report state of charge, in which case pick any sensor that shows the battery percentage.",
+          "scan_interval": "30 seconds suits almost everyone. Much faster and some inverters start ignoring requests."
         }
       }
     },
     "error": {
-      "cannot_connect": "Could not reach the inverter. Check the IP address and port, make sure the inverter is on the same network, and close any other app holding the Modbus connection (SEMS/SolarGo or a second Modbus integration).",
-      "host_required": "Enter the inverter's IP address.",
-      "serial_port_required": "Enter the serial device, for example /dev/ttyUSB0.",
-      "target_below_min": "'Charge up to' has to be higher than 'Never discharge below'.",
-      "unknown": "Unexpected error. Check the Home Assistant log for details."
+      "cannot_connect": "Could not reach the inverter. Check the IP address, make sure the inverter is on the same network, and close any other app holding the connection (SEMS/SolarGo or a second GoodWe integration).",
+      "target_below_min": "'Charge up to' has to be higher than 'Never discharge below'."
     },
     "abort": {
       "already_configured": "This inverter is already configured."
@@ -95,8 +82,8 @@
           "cycle_cost_lei_mwh": "Battery wear, expressed per MWh cycled. Rough estimate: battery price ÷ (warranted cycles × capacity in MWh). Raise it to make the integration trade less.",
           "round_trip_efficiency": "How much of the stored energy you get back out. 0.90 means 90%.",
           "entsoe_token": "Fallback source for day-ahead prices when OPCOM PZU cannot be reached. Free from transparency.entsoe.eu.",
-          "soc_entity": "Only needed if your BMS does not report state of charge over Modbus. Clear the field to go back to the inverter's own reading.",
-          "scan_interval": "30 seconds suits almost everyone. Much faster and some inverters start ignoring Modbus requests."
+          "soc_entity": "Only needed if your BMS does not report state of charge. Clear the field to go back to the inverter's own reading.",
+          "scan_interval": "30 seconds suits almost everyone. Much faster and some inverters start ignoring requests."
         }
       }
     },
@@ -104,16 +91,15 @@
       "target_below_min": "'Charge up to' has to be higher than 'Never discharge below'."
     }
   },
-  "selector": {
-    "connection": {
-      "options": {
-        "tcp": "Modbus TCP — inverter or dongle on the network (most common)",
-        "rtu_over_tcp": "Modbus RTU over TCP — through a serial-to-Ethernet gateway",
-        "serial": "Modbus RTU — RS485 adapter attached to this machine"
-      }
-    }
-  },
   "entity": {
+    "button": {
+      "synchronize_clock": {
+        "name": "Synchronize clock"
+      },
+      "clear_economic_schedule": {
+        "name": "Clear economic schedule"
+      }
+    },
     "switch": {
       "export_limit_enable": {
         "name": "Export limit"
@@ -135,6 +121,9 @@
       "export_limit_power": {
         "name": "Export limit power"
       },
+      "export_limit_percent": {
+        "name": "Export limit"
+      },
       "ems_power": {
         "name": "EMS power"
       },
@@ -143,6 +132,9 @@
       },
       "battery_discharge_limit": {
         "name": "Battery discharge limit"
+      },
+      "battery_discharge_depth": {
+        "name": "Depth of discharge"
       },
       "inverter_ac_limit": {
         "name": "Inverter AC limit"
@@ -164,6 +156,19 @@
       }
     },
     "select": {
+      "operation_mode": {
+        "name": "Operation mode",
+        "state": {
+          "general": "General",
+          "off_grid": "Off-grid",
+          "backup": "Back-up",
+          "eco": "Eco",
+          "peak_shaving": "Peak shaving",
+          "self_use": "Self-use",
+          "eco_charge": "Eco charge",
+          "eco_discharge": "Eco discharge"
+        }
+      },
       "ems_mode": {
         "name": "EMS mode",
         "state": {
@@ -172,92 +177,17 @@
           "discharge_pv": "Discharge + PV",
           "import_ac": "Import from grid",
           "export_ac": "Export to grid",
+          "conserve": "Conserve for off-grid",
+          "off_grid": "Off-grid",
           "battery_standby": "Battery standby",
-          "charge_bat": "Forced charge",
-          "discharge_bat": "Forced discharge",
-          "stopped": "Stopped"
+          "buy_power": "Buy power at set level",
+          "sell_power": "Sell power at set level",
+          "charge_battery": "Forced charge",
+          "discharge_battery": "Forced discharge"
         }
       }
     },
     "sensor": {
-      "pv_power": {
-        "name": "PV power"
-      },
-      "inverter_power": {
-        "name": "Inverter power"
-      },
-      "ac_active_power": {
-        "name": "Grid active power"
-      },
-      "load_power": {
-        "name": "Load power"
-      },
-      "backup_load_power": {
-        "name": "Back-up load power"
-      },
-      "battery_power": {
-        "name": "Battery power"
-      },
-      "battery2_power": {
-        "name": "Battery 2 power"
-      },
-      "pv1_power": {
-        "name": "PV1 power"
-      },
-      "pv2_power": {
-        "name": "PV2 power"
-      },
-      "pv3_power": {
-        "name": "PV3 power"
-      },
-      "pv4_power": {
-        "name": "PV4 power"
-      },
-      "ac_reactive_power": {
-        "name": "Reactive power"
-      },
-      "ac_apparent_power": {
-        "name": "Apparent power"
-      },
-      "battery_soc": {
-        "name": "Battery SOC"
-      },
-      "battery_soh": {
-        "name": "Battery SOH"
-      },
-      "battery_capacity": {
-        "name": "Battery rated capacity"
-      },
-      "battery_charge_allow": {
-        "name": "Chargeable energy"
-      },
-      "battery_discharge_allow": {
-        "name": "Dischargeable energy"
-      },
-      "battery_strings": {
-        "name": "Battery strings"
-      },
-      "pv_energy_total": {
-        "name": "Total PV generation"
-      },
-      "grid_import_energy": {
-        "name": "Grid energy imported"
-      },
-      "grid_export_energy": {
-        "name": "Grid energy exported"
-      },
-      "total_charge_energy": {
-        "name": "Battery total charged"
-      },
-      "total_discharge_energy": {
-        "name": "Battery total discharged"
-      },
-      "energy_charge": {
-        "name": "Battery charged (counter)"
-      },
-      "energy_discharge": {
-        "name": "Battery discharged (counter)"
-      },
       "pzu_price": {
         "name": "PZU price"
       },
@@ -292,7 +222,7 @@
   "services": {
     "set_ems_mode": {
       "name": "Set EMS mode",
-      "description": "Writes registers 47505/47511/47512.",
+      "description": "Arms the inverter and writes the EMS mode and power.",
       "fields": {
         "entry_id": {
           "name": "Entry",
@@ -300,7 +230,7 @@
         },
         "mode": {
           "name": "Mode",
-          "description": "EMS mode from table 8-16."
+          "description": "EMS mode from the protocol's mode table."
         },
         "power": {
           "name": "Power",
@@ -318,17 +248,17 @@
         },
         "enabled": {
           "name": "Enabled",
-          "description": "Register 47509."
+          "description": "Whether the export limit applies."
         },
         "power": {
           "name": "Power",
-          "description": "Register 47510, -30000..30000 W."
+          "description": "Export limit, -30000..30000 W. Negative forces import."
         }
       }
     },
     "force_charge": {
       "name": "Force charge",
-      "description": "EMS mode Charge-BAT with grid top-up.",
+      "description": "EMS mode Charge Battery, with grid top-up.",
       "fields": {
         "entry_id": {
           "name": "Entry",
@@ -342,7 +272,7 @@
     },
     "force_discharge": {
       "name": "Force discharge",
-      "description": "EMS mode Discharge-BAT.",
+      "description": "EMS mode Discharge Battery.",
       "fields": {
         "entry_id": {
           "name": "Entry",
@@ -366,7 +296,7 @@
     },
     "clear_economic_schedule": {
       "name": "Clear economic schedule",
-      "description": "Writes register 47533 to clear slots 47515-47530.",
+      "description": "Clears the economic schedule slots that would otherwise compete with EMS commands.",
       "fields": {
         "entry_id": {
           "name": "Entry",

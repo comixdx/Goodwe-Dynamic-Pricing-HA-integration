@@ -1,28 +1,47 @@
-"""Senzorii de telemetrie, de preț PZU și de stare a dispecerizării."""
+"""Inverter telemetry, PZU price and dispatch-state sensors.
+
+The inverter sensors are not enumerated here. The library's sensor definitions
+carry id, name, unit and kind, so the entities are generated from
+`inverter.sensors()` and only the unit-to-device-class mapping lives in this
+file. The hand-written register list this replaced could only ever describe one
+inverter family.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
+from goodwe import Inverter, Sensor, SensorKind
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
+    EntityCategory,
     UnitOfApparentPower,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
     UnitOfEnergy,
+    UnitOfFrequency,
     UnitOfPower,
     UnitOfReactivePower,
+    UnitOfTemperature,
+    UnitOfTime,
 )
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DISPATCH_AUTO,
@@ -33,183 +52,242 @@ from .const import (
     DISPATCH_UNAVAILABLE,
     DOMAIN,
 )
-from .coordinator import GoodweEmsCoordinator
+from .coordinator import GoodweEmsConfigEntry, GoodweEmsCoordinator
 from .dispatch import window_label
 from .entity import GoodweEmsEntity
 from .pzu_prices import lei_per_kwh, spread
-from .readings import LiveData
 
+# The coordinator handles all data updates, so parallel updates are not needed.
+PARALLEL_UPDATES = 0
 
-@dataclass(frozen=True, kw_only=True)
-class GoodweSensorDescription(SensorEntityDescription):
-    value_fn: Callable[[LiveData], float | int | None]
+BATTERY_SOC = "battery_soc"
 
+# Sensors reset to 0 at midnight. A PV-only inverter goes dead after sunset and
+# resets its "_day" counters when it wakes up, which would otherwise show as a
+# reset at sunrise rather than at midnight. With a battery attached the inverter
+# stays awake and resets them itself.
+DAILY_RESET = ["e_day", "e_load_day"]
 
-def _power(key: str, attr: str, **kwargs) -> GoodweSensorDescription:
-    return GoodweSensorDescription(
-        key=key,
-        device_class=SensorDeviceClass.POWER,
-        native_unit_of_measurement=UnitOfPower.WATT,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d, a=attr: getattr(d, a),
-        **kwargs,
-    )
-
-
-def _energy(key: str, attr: str, **kwargs) -> GoodweSensorDescription:
-    return GoodweSensorDescription(
-        key=key,
-        device_class=SensorDeviceClass.ENERGY,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        suggested_display_precision=1,
-        value_fn=lambda d, a=attr: getattr(d, a),
-        **kwargs,
-    )
-
-
-DIAG = EntityCategory.DIAGNOSTIC
-
-LIVE_SENSORS: tuple[GoodweSensorDescription, ...] = (
-    # Putere
-    _power("pv_power", "pv_power", icon="mdi:solar-power"),
-    _power("inverter_power", "inverter_power", icon="mdi:sine-wave"),
-    _power("ac_active_power", "ac_active_power", icon="mdi:transmission-tower"),
-    _power("load_power", "load_power", icon="mdi:home-lightning-bolt"),
-    _power("backup_load_power", "backup_load_power", icon="mdi:home-battery"),
-    _power("battery_power", "battery_power", icon="mdi:battery-charging"),
-    _power("battery2_power", "battery2_power", icon="mdi:battery-charging", entity_registry_enabled_default=False),
-    _power("pv1_power", "pv1_power", entity_category=DIAG, entity_registry_enabled_default=False),
-    _power("pv2_power", "pv2_power", entity_category=DIAG, entity_registry_enabled_default=False),
-    _power("pv3_power", "pv3_power", entity_category=DIAG, entity_registry_enabled_default=False),
-    _power("pv4_power", "pv4_power", entity_category=DIAG, entity_registry_enabled_default=False),
-    GoodweSensorDescription(
-        key="ac_reactive_power",
-        device_class=SensorDeviceClass.REACTIVE_POWER,
-        native_unit_of_measurement=UnitOfReactivePower.VOLT_AMPERE_REACTIVE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_category=DIAG,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.ac_reactive_power,
-    ),
-    GoodweSensorDescription(
-        key="ac_apparent_power",
-        device_class=SensorDeviceClass.APPARENT_POWER,
-        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_category=DIAG,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.ac_apparent_power,
-    ),
-    # Stare baterie
-    GoodweSensorDescription(
-        key="battery_soc",
-        device_class=SensorDeviceClass.BATTERY,
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.soc,
-    ),
-    GoodweSensorDescription(
-        key="battery_soh",
-        icon="mdi:heart-pulse",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_category=DIAG,
-        value_fn=lambda d: d.soh,
-    ),
-    # Cei trei senzori de mai jos sunt kWh, dar nu energie *acumulată*: sunt
-    # cantități stocate, care urcă și coboară. `ENERGY` ar fi fost greșit —
-    # Home Assistant îl acceptă doar cu `total`/`total_increasing`, iar o
-    # valoare care scade ar fi citită ca resetare de contor și ar strica
-    # statisticile. `ENERGY_STORAGE` e clasa pentru „câtă energie e înăuntru
-    # acum" și merge cu `measurement`.
-    GoodweSensorDescription(
-        key="battery_capacity",
-        icon="mdi:battery-heart-variant",
-        device_class=SensorDeviceClass.ENERGY_STORAGE,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-        entity_category=DIAG,
-        value_fn=lambda d: d.total_capacity_kwh,
-    ),
-    GoodweSensorDescription(
-        key="battery_charge_allow",
-        icon="mdi:battery-arrow-up-outline",
-        device_class=SensorDeviceClass.ENERGY_STORAGE,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        value_fn=lambda d: d.charge_allow_kwh,
-    ),
-    GoodweSensorDescription(
-        key="battery_discharge_allow",
-        icon="mdi:battery-arrow-down-outline",
-        device_class=SensorDeviceClass.ENERGY_STORAGE,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        value_fn=lambda d: d.discharge_allow_kwh,
-    ),
-    GoodweSensorDescription(
-        key="battery_strings",
-        icon="mdi:battery-unknown",
-        entity_category=DIAG,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.battery_strings,
-    ),
-    # Energie
-    #
-    # Cele trei de mai jos sunt singurele care pot popula tabloul Energy la
-    # secțiunile solar și rețea: acolo intră doar kWh acumulați, iar senzorii
-    # de putere de mai sus, oricât de corecți, nu sunt eligibili niciodată.
-    _energy("pv_energy_total", "pv_energy_total_kwh", icon="mdi:solar-power-variant"),
-    _energy("grid_import_energy", "grid_import_energy_kwh", icon="mdi:home-import-outline"),
-    _energy("grid_export_energy", "grid_export_energy_kwh", icon="mdi:home-export-outline"),
-    _energy("total_charge_energy", "total_charge_energy_kwh", icon="mdi:battery-plus"),
-    _energy("total_discharge_energy", "total_discharge_energy_kwh", icon="mdi:battery-minus"),
-    _energy("energy_charge", "energy_charge_kwh", entity_registry_enabled_default=False),
-    _energy("energy_discharge", "energy_discharge_kwh", entity_registry_enabled_default=False),
+# Everything else is filed under diagnostics, so the device page opens on the
+# handful of figures people actually look at.
+_MAIN_SENSORS = (
+    "ppv",
+    "house_consumption",
+    "active_power",
+    "battery_soc",
+    "pbattery1",
+    "e_day",
+    "e_total",
+    "meter_e_total_exp",
+    "meter_e_total_imp",
+    "e_bat_charge_total",
+    "e_bat_discharge_total",
 )
+
+_ICONS: dict[SensorKind, str] = {
+    SensorKind.PV: "mdi:solar-power",
+    SensorKind.AC: "mdi:power-plug-outline",
+    SensorKind.UPS: "mdi:power-plug-off-outline",
+    SensorKind.BAT: "mdi:battery-high",
+    SensorKind.GRID: "mdi:transmission-tower",
+}
+
+
+@dataclass(frozen=True)
+class GoodweSensorEntityDescription(SensorEntityDescription):
+    """Describes a GoodWe inverter sensor."""
+
+    value: Callable[[GoodweEmsCoordinator, str], Any] = lambda coordinator, sensor: (
+        coordinator.sensor_value(sensor)
+    )
+    available: Callable[[GoodweEmsCoordinator], bool] = lambda coordinator: (
+        coordinator.last_update_success
+    )
+
+
+_DESCRIPTIONS: dict[str, GoodweSensorEntityDescription] = {
+    "A": GoodweSensorEntityDescription(
+        key="A",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+    ),
+    "V": GoodweSensorEntityDescription(
+        key="V",
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+    ),
+    "W": GoodweSensorEntityDescription(
+        key="W",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+    ),
+    "kWh": GoodweSensorEntityDescription(
+        key="kWh",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        value=lambda coordinator, sensor: coordinator.total_sensor_value(sensor),
+        available=lambda coordinator: coordinator.data is not None,
+    ),
+    "VA": GoodweSensorEntityDescription(
+        key="VA",
+        device_class=SensorDeviceClass.APPARENT_POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        entity_registry_enabled_default=False,
+    ),
+    "var": GoodweSensorEntityDescription(
+        key="var",
+        device_class=SensorDeviceClass.REACTIVE_POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfReactivePower.VOLT_AMPERE_REACTIVE,
+        entity_registry_enabled_default=False,
+    ),
+    "C": GoodweSensorEntityDescription(
+        key="C",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+    ),
+    "Hz": GoodweSensorEntityDescription(
+        key="Hz",
+        device_class=SensorDeviceClass.FREQUENCY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfFrequency.HERTZ,
+    ),
+    "h": GoodweSensorEntityDescription(
+        key="h",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        entity_registry_enabled_default=False,
+    ),
+    "%": GoodweSensorEntityDescription(
+        key="%",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+    ),
+}
+DIAG_SENSOR = GoodweSensorEntityDescription(
+    key="_",
+    state_class=SensorStateClass.MEASUREMENT,
+)
+TEXT_SENSOR = GoodweSensorEntityDescription(key="text")
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    config_entry: GoodweEmsConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    coordinator: GoodweEmsCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
+    """Set up the sensors from a config entry."""
+    data = config_entry.runtime_data
+    coordinator = data.coordinator
+    device_info = data.device_info
+
+    entities: list[SensorEntity] = [
+        InverterSensor(coordinator, device_info, data.inverter, sensor)
+        for sensor in data.inverter.sensors()
+        if not sensor.id_.startswith("xx")
+    ]
+
+    entities.extend(
         [
-            *(GoodweLiveSensor(coordinator, d) for d in LIVE_SENSORS),
-            PzuPriceSensor(coordinator),
-            PzuStatSensor(coordinator, "pzu_average_today", lambda s: s.average),
-            PzuStatSensor(coordinator, "pzu_min_today", lambda s: s.minimum),
-            PzuStatSensor(coordinator, "pzu_max_today", lambda s: s.maximum),
-            PzuStatSensor(coordinator, "pzu_spread_today", spread),
-            MonthlyWeightedSensor(coordinator),
-            DispatchStateSensor(coordinator),
+            PzuPriceSensor(coordinator, device_info),
+            PzuStatSensor(coordinator, device_info, "pzu_average_today", lambda s: s.average),
+            PzuStatSensor(coordinator, device_info, "pzu_min_today", lambda s: s.minimum),
+            PzuStatSensor(coordinator, device_info, "pzu_max_today", lambda s: s.maximum),
+            PzuStatSensor(coordinator, device_info, "pzu_spread_today", spread),
+            MonthlyWeightedSensor(coordinator, device_info),
+            DispatchStateSensor(coordinator, device_info),
         ]
     )
 
+    async_add_entities(entities)
 
-class GoodweLiveSensor(GoodweEmsEntity, SensorEntity):
-    """Un registru de telemetrie, expus ca senzor."""
 
-    entity_description: GoodweSensorDescription
+class InverterSensor(CoordinatorEntity[GoodweEmsCoordinator], SensorEntity):
+    """One sensor as the library defines it."""
+
+    _attr_has_entity_name = True
+    entity_description: GoodweSensorEntityDescription
 
     def __init__(
-        self, coordinator: GoodweEmsCoordinator, description: GoodweSensorDescription
+        self,
+        coordinator: GoodweEmsCoordinator,
+        device_info: DeviceInfo,
+        inverter: Inverter,
+        sensor: Sensor,
     ) -> None:
-        super().__init__(coordinator, description.key)
-        self.entity_description = description
+        """Initialize an inverter sensor."""
+        super().__init__(coordinator)
+        self._attr_name = sensor.name.strip()
+        self._attr_unique_id = f"{DOMAIN}-{sensor.id_}-{inverter.serial_number}"
+        self._attr_device_info = device_info
+        self._attr_entity_category = (
+            EntityCategory.DIAGNOSTIC if sensor.id_ not in _MAIN_SENSORS else None
+        )
+        try:
+            self.entity_description = _DESCRIPTIONS[sensor.unit]
+        except KeyError:
+            if "Enum" in type(sensor).__name__ or sensor.id_ == "timestamp":
+                self.entity_description = TEXT_SENSOR
+            else:
+                self.entity_description = DIAG_SENSOR
+                self._attr_native_unit_of_measurement = sensor.unit
+        self._attr_icon = _ICONS.get(sensor.kind)
+        if sensor.id_ == BATTERY_SOC:
+            self._attr_device_class = SensorDeviceClass.BATTERY
+        self._sensor = sensor
+        self._stop_reset: Callable[[], None] | None = None
 
     @property
-    def native_value(self) -> float | int | None:
-        data = self.live
-        return self.entity_description.value_fn(data) if data else None
+    def native_value(self) -> StateType | date | datetime | Decimal:
+        """Return the value reported by the sensor."""
+        return self.entity_description.value(self.coordinator, self._sensor.id_)
 
     @property
     def available(self) -> bool:
-        return super().available and self.native_value is not None
+        """Return whether the entity is available.
+
+        Delegated to the description, because some sensors (energy produced
+        today) should stay available even while a PV-only inverter is offline
+        overnight and most sensors genuinely are not.
+        """
+        return self.entity_description.available(self.coordinator)
+
+    @callback
+    def async_reset(self, now) -> None:
+        """Reset the value back to 0 at midnight."""
+        if not self.coordinator.last_update_success:
+            self.coordinator.reset_sensor(self._sensor.id_)
+            self.async_write_ha_state()
+        next_midnight = dt_util.start_of_local_day(
+            dt_util.now() + timedelta(days=1, minutes=1)
+        )
+        self._stop_reset = async_track_point_in_time(
+            self.hass, self.async_reset, next_midnight
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Schedule the midnight reset task."""
+        if self._sensor.id_ in DAILY_RESET:
+            next_midnight = dt_util.start_of_local_day(
+                dt_util.now() + timedelta(days=1)
+            )
+            self._stop_reset = async_track_point_in_time(
+                self.hass, self.async_reset, next_midnight
+            )
+        await super().async_added_to_hass()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel the midnight reset task."""
+        if self._sensor.id_ in DAILY_RESET and self._stop_reset is not None:
+            self._stop_reset()
+        await super().async_will_remove_from_hass()
 
 
 class _PriceBase(GoodweEmsEntity, SensorEntity):
@@ -218,7 +296,7 @@ class _PriceBase(GoodweEmsEntity, SensorEntity):
 
     @property
     def series(self):
-        return self.coordinator.data.series if self.coordinator.data else None
+        return self.coordinator.series
 
     @property
     def native_unit_of_measurement(self) -> str | None:
@@ -228,12 +306,12 @@ class _PriceBase(GoodweEmsEntity, SensorEntity):
 
 
 class PzuPriceSensor(_PriceBase):
-    """Prețul intervalului de 15 minute curent."""
+    """Price of the current 15-minute interval."""
 
-    _attr_icon = "mdi:cash"
-
-    def __init__(self, coordinator: GoodweEmsCoordinator) -> None:
-        super().__init__(coordinator, "pzu_price")
+    def __init__(
+        self, coordinator: GoodweEmsCoordinator, device_info: DeviceInfo
+    ) -> None:
+        super().__init__(coordinator, device_info, "pzu_price")
 
     @property
     def native_value(self) -> float | None:
@@ -247,26 +325,32 @@ class PzuPriceSensor(_PriceBase):
             return None
         index = series.index_at()
         return {
-            "sursa": series.source,
-            "zi_livrare": series.day.isoformat(),
+            "source": series.source,
+            "delivery_day": series.day.isoformat(),
             "interval": index + 1,
-            "intervale_total": len(series.values),
-            "pret_mwh": round(series.values[index], 2),
-            "moneda": series.currency,
-            "actionabil": series.is_actionable(),
-            "descarcat_la": series.fetched_at.isoformat(timespec="seconds"),
-            "medii_orare_kwh": [round(lei_per_kwh(v), 4) for v in series.hourly_averages()],
-            "intervale_kwh": [round(lei_per_kwh(v), 4) for v in series.values],
+            "intervals_total": len(series.values),
+            "price_mwh": round(series.values[index], 2),
+            "currency": series.currency,
+            "actionable": series.is_actionable(),
+            "fetched_at": series.fetched_at.isoformat(timespec="seconds"),
+            "hourly_averages_kwh": [
+                round(lei_per_kwh(v), 4) for v in series.hourly_averages()
+            ],
+            "intervals_kwh": [round(lei_per_kwh(v), 4) for v in series.values],
         }
 
 
 class PzuStatSensor(_PriceBase):
-    """Agregate ale zilei: medie, minim, maxim, amplitudine."""
+    """Daily aggregates: average, minimum, maximum, spread."""
 
-    _attr_icon = "mdi:chart-line"
-
-    def __init__(self, coordinator: GoodweEmsCoordinator, key: str, fn) -> None:
-        super().__init__(coordinator, key)
+    def __init__(
+        self,
+        coordinator: GoodweEmsCoordinator,
+        device_info: DeviceInfo,
+        key: str,
+        fn: Callable[[Any], float],
+    ) -> None:
+        super().__init__(coordinator, device_info, key)
         self._fn = fn
 
     @property
@@ -276,37 +360,35 @@ class PzuStatSensor(_PriceBase):
 
 
 class MonthlyWeightedSensor(GoodweEmsEntity, SensorEntity):
-    """Prețul mediu ponderat lunar — baza de decontare pentru prosumatori.
+    """Monthly weighted average price -- the prosumer settlement basis.
 
-    Nu e media prețurilor orare. Ordinul ANRE 15/2022 folosește media ponderată
-    publicată de OPCOM, iar cele două valori diferă numeric.
+    Not the average of the hourly prices. ANRE order 15/2022 uses the weighted
+    average OPCOM publishes, and the two differ numerically.
     """
 
-    _attr_icon = "mdi:calendar-month"
     _attr_native_unit_of_measurement = "RON/MWh"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coordinator: GoodweEmsCoordinator) -> None:
-        super().__init__(coordinator, "pzu_monthly_weighted")
+    def __init__(
+        self, coordinator: GoodweEmsCoordinator, device_info: DeviceInfo
+    ) -> None:
+        super().__init__(coordinator, device_info, "pzu_monthly_weighted")
 
     @property
     def native_value(self) -> float | None:
-        data = self.coordinator.data
-        return data.monthly_weighted[0] if data and data.monthly_weighted else None
+        weighted = self.coordinator.monthly_weighted
+        return weighted[0] if weighted else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        data = self.coordinator.data
-        if not data or not data.monthly_weighted:
-            return None
-        return {"luna": data.monthly_weighted[1]}
+        weighted = self.coordinator.monthly_weighted
+        return {"month": weighted[1]} if weighted else None
 
 
 class DispatchStateSensor(GoodweEmsEntity, SensorEntity):
-    """Ce face motorul de dispecerizare acum și de ce."""
+    """What the dispatch engine is doing right now, and why."""
 
-    _attr_icon = "mdi:calendar-clock"
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [
         DISPATCH_IDLE,
@@ -317,31 +399,33 @@ class DispatchStateSensor(GoodweEmsEntity, SensorEntity):
         DISPATCH_UNAVAILABLE,
     ]
 
-    def __init__(self, coordinator: GoodweEmsCoordinator) -> None:
-        super().__init__(coordinator, "dispatch_state")
+    def __init__(
+        self, coordinator: GoodweEmsCoordinator, device_info: DeviceInfo
+    ) -> None:
+        super().__init__(coordinator, device_info, "dispatch_state")
 
     @property
     def native_value(self) -> str | None:
-        data = self.coordinator.data
-        return data.decision.state if data and data.decision else None
+        decision = self.coordinator.decision
+        return decision.state if decision else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        data = self.coordinator.data
-        if not data or not data.decision:
+        decision = self.coordinator.decision
+        if decision is None:
             return None
-        decision, series = data.decision, data.series
+        series = self.coordinator.series
         attrs: dict[str, Any] = {
-            "motiv": decision.reason,
-            "mod_ems": f"{decision.ems_mode:#06x}",
-            "putere_w": decision.power_w,
+            "reason": decision.reason,
+            "ems_mode": decision.ems_mode.name.lower(),
+            "power_w": decision.power_w,
             "soc": self.coordinator.current_soc(),
         }
         if series is not None:
-            attrs["fereastra_incarcare"] = window_label(series, decision.charge_window)
-            attrs["fereastra_descarcare"] = window_label(series, decision.discharge_window)
+            attrs["charge_window"] = window_label(series, decision.charge_window)
+            attrs["discharge_window"] = window_label(series, decision.discharge_window)
             if decision.charge_price is not None:
-                attrs["pret_incarcare_mwh"] = round(decision.charge_price, 2)
+                attrs["charge_price_mwh"] = round(decision.charge_price, 2)
             if decision.discharge_price is not None:
-                attrs["pret_descarcare_mwh"] = round(decision.discharge_price, 2)
+                attrs["discharge_price_mwh"] = round(decision.discharge_price, 2)
         return attrs

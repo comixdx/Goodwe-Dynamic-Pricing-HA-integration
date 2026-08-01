@@ -1,14 +1,24 @@
-"""Coordinatorul integrării: un singur ciclu care citește, decide și scrie."""
+"""Update coordinator: one cycle that reads, decides and writes.
+
+`data` is the library's runtime dictionary, exactly as the core GoodWe
+integration exposes it, so sensor entities can be generated from
+`inverter.sensors()` without a translation layer in between. The dispatch state
+lives in attributes alongside it rather than inside `data`, because it is not
+inverter telemetry and does not share its update semantics.
+"""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Any
 
+from goodwe import Inverter, InverterError, RequestFailedException
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -35,71 +45,104 @@ from .const import (
     DEFAULT_TARGET_SOC,
     DISPATCH_IDLE,
     DOMAIN,
+    SENSOR_BATTERY_SOC,
 )
 from .dispatch import BatteryState, DispatchConfig, DispatchDecision, plan
-from .inverter import GoodweInverter, InverterState
-from .modbus import ModbusError
+from .ems import BatteryLimits, GoodweEms
 from .pzu_prices import RO_TZ, PriceError, PriceSeries, PzuPriceCoordinator
-from .readings import DeviceInfoData, GoodweReader, LiveData
 
 _LOGGER = logging.getLogger(__name__)
 
 PRICE_RETRY_INTERVAL = timedelta(minutes=20)
 
+# A plain alias rather than a `type` statement: core can rely on Python 3.13,
+# but a custom component still gets loaded on 3.11 installations.
+GoodweEmsConfigEntry = ConfigEntry["GoodweEmsRuntimeData"]
+
 
 @dataclass
-class GoodweEmsData:
-    """Ce văd entitățile la fiecare actualizare."""
+class GoodweEmsRuntimeData:
+    """Everything the platforms need, hung off the config entry."""
 
-    inverter: InverterState
-    live: LiveData
-    series: PriceSeries | None
-    decision: DispatchDecision | None
-    monthly_weighted: tuple[float, str] | None
-    dispatch_enabled: bool
+    inverter: Inverter
+    ems: GoodweEms
+    coordinator: GoodweEmsCoordinator
+    device_info: DeviceInfo
 
 
-class GoodweEmsCoordinator(DataUpdateCoordinator[GoodweEmsData]):
-    """Citește invertorul, împrospătează prețurile, aplică decizia."""
+class GoodweEmsCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Read the inverter, refresh prices, apply the decision."""
+
+    config_entry: GoodweEmsConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
-        inverter: GoodweInverter,
+        entry: GoodweEmsConfigEntry,
+        ems: GoodweEms,
     ) -> None:
+        """Initialize the update coordinator."""
         options = {**entry.data, **entry.options}
-        self.entry = entry
-        self.inverter = inverter
-        self.reader = GoodweReader(inverter.client)
-        self.device_info_data = DeviceInfoData()
-        self._options = options
-        self._prices = PzuPriceCoordinator(
-            async_get_clientsession(hass), options.get(CONF_ENTSOE_TOKEN) or None
-        )
-        self._soc_entity: str | None = options.get(CONF_SOC_ENTITY) or None
-        self._dispatch_enabled: bool = bool(options.get(CONF_ENABLE_DISPATCH, False))
-        self._last_price_attempt: datetime | None = None
-        self._last_monthly_day: date | None = None
-        self._last_written: tuple[int, int] | None = None
-
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=timedelta(
                 seconds=int(options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
             ),
         )
+        self.ems = ems
+        self.inverter = ems.inverter
+        self._options = options
+        self._last_data: dict[str, Any] = {}
 
-    # -- configurație -------------------------------------------------------
+        self._prices = PzuPriceCoordinator(
+            async_get_clientsession(hass), options.get(CONF_ENTSOE_TOKEN) or None
+        )
+        self._soc_entity: str | None = options.get(CONF_SOC_ENTITY) or None
+        self._dispatch_enabled: bool = bool(options.get(CONF_ENABLE_DISPATCH, False))
+        self._limits = BatteryLimits()
+        self._last_price_attempt: datetime | None = None
+        self._last_monthly_day: date | None = None
+        self._last_written: tuple[int, int] | None = None
+
+        self.decision: DispatchDecision | None = None
+
+    # -- inverter data, core-compatible accessors ---------------------------
+
+    def sensor_value(self, sensor: str) -> Any:
+        """Current, or last known, value of a runtime sensor."""
+        value = self.data.get(sensor)
+        return value if value is not None else self._last_data.get(sensor)
+
+    def total_sensor_value(self, sensor: str) -> Any:
+        """Current value of a 'total' sensor, which is never legitimately 0."""
+        return self.data.get(sensor) or self._last_data.get(sensor)
+
+    def reset_sensor(self, sensor: str) -> None:
+        """Reset a daily cumulative sensor to 0 at midnight."""
+        self._last_data[sensor] = 0
+        self.data[sensor] = 0
+
+    # -- price and dispatch state -------------------------------------------
+
+    @property
+    def series(self) -> PriceSeries | None:
+        return self._prices.series
+
+    @property
+    def monthly_weighted(self) -> tuple[float, str] | None:
+        return self._prices.monthly_weighted
 
     @property
     def dispatch_config(self) -> DispatchConfig:
         o = self._options
         return DispatchConfig(
             capacity_kwh=float(o.get(CONF_BATTERY_CAPACITY, DEFAULT_BATTERY_CAPACITY)),
-            max_charge_power_w=int(o.get(CONF_MAX_CHARGE_POWER, DEFAULT_MAX_CHARGE_POWER)),
+            max_charge_power_w=int(
+                o.get(CONF_MAX_CHARGE_POWER, DEFAULT_MAX_CHARGE_POWER)
+            ),
             max_discharge_power_w=int(
                 o.get(CONF_MAX_DISCHARGE_POWER, DEFAULT_MAX_DISCHARGE_POWER)
             ),
@@ -117,14 +160,15 @@ class GoodweEmsCoordinator(DataUpdateCoordinator[GoodweEmsData]):
         return self._dispatch_enabled
 
     def restore_dispatch_enabled(self, enabled: bool) -> bool:
-        """Reia starea comutatorului după o repornire. True dacă s-a schimbat.
+        """Resume the switch state after a restart. True if it changed.
 
-        Opțiunea din configurare doar inițializează comutatorul; starea lui de
-        rulare e sursa de adevăr după aceea, altfel o repornire de Home
-        Assistant oprea dispecerizarea fără ca nimeni s-o fi cerut.
+        The config option only seeds the switch; its runtime state is the source
+        of truth afterwards, otherwise restarting Home Assistant would stop
+        dispatch without anyone asking for it.
 
-        Nu scrie nimic pe invertor: ciclul următor aplică oricum decizia, iar
-        un `async_auto()` la fiecare pornire ar fi o scriere inutilă.
+        Nothing is written to the inverter: the next cycle applies the decision
+        anyway, and an `async_auto()` on every startup would be a pointless
+        write.
         """
         if self._dispatch_enabled == enabled:
             return False
@@ -132,27 +176,28 @@ class GoodweEmsCoordinator(DataUpdateCoordinator[GoodweEmsData]):
         return True
 
     async def async_set_dispatch_enabled(self, enabled: bool) -> None:
-        """Comutatorul de dispecerizare. La oprire, invertorul revine în Auto."""
+        """Turn price dispatch on or off. Turning it off returns to Auto."""
         self._dispatch_enabled = enabled
         if not enabled:
             try:
-                await self.inverter.async_auto()
-            except ModbusError as err:
-                _LOGGER.error("Revenirea în modul Auto a eșuat: %s", err)
+                await self.ems.async_auto()
+            except (InverterError, ValueError) as err:
+                _LOGGER.error("Returning to Auto mode failed: %s", err)
             self._last_written = None
         await self.async_request_refresh()
 
-    # -- starea bateriei ----------------------------------------------------
+    # -- battery state -------------------------------------------------------
 
     def current_soc(self) -> float | None:
-        """SOC-ul bateriei: întâi registrul 37007, apoi entitatea configurată.
+        """Battery state of charge, from the inverter or the fallback entity.
 
-        Registrul e sursa preferată pentru că e citit în același ciclu cu restul
-        deciziei. Entitatea externă rămâne ca rezervă pentru instalațiile pe
-        care blocul BMS nu răspunde.
+        The inverter is preferred because it is read in the same cycle as the
+        rest of the decision. The external entity stays as a fallback for
+        installations whose BMS block does not answer.
         """
-        if self.data is not None and self.data.live.soc is not None:
-            return float(self.data.live.soc)
+        soc = self.data.get(SENSOR_BATTERY_SOC) if self.data else None
+        if soc is not None:
+            return float(soc)
         return self._soc_from_entity()
 
     def _soc_from_entity(self) -> float | None:
@@ -166,54 +211,69 @@ class GoodweEmsCoordinator(DataUpdateCoordinator[GoodweEmsData]):
         except ValueError:
             return None
 
-    def _battery_state(self, live: LiveData) -> BatteryState:
+    def _battery_state(self, runtime: dict[str, Any]) -> BatteryState:
+        soc = runtime.get(SENSOR_BATTERY_SOC)
         return BatteryState(
-            soc=float(live.soc) if live.soc is not None else self._soc_from_entity(),
-            capacity_kwh=live.total_capacity_kwh,
-            charge_allow_kwh=live.charge_allow_kwh,
-            discharge_allow_kwh=live.discharge_allow_kwh,
+            soc=float(soc) if soc is not None else self._soc_from_entity(),
+            capacity_kwh=self._limits.rated_capacity_kwh,
+            charge_allow_kwh=self._limits.charge_allow_kwh,
+            discharge_allow_kwh=self._limits.discharge_allow_kwh,
         )
 
-    # -- ciclul principal ---------------------------------------------------
+    # -- the main cycle ------------------------------------------------------
 
-    async def _async_update_data(self) -> GoodweEmsData:
+    async def _async_update_data(self) -> dict[str, Any]:
+        self._last_data = self.data or {}
         try:
-            inverter_state = await self.inverter.async_read_state()
-            live = await self.reader.async_read()
-        except ModbusError as err:
-            raise UpdateFailed(f"Citirea invertorului a eșuat: {err}") from err
+            runtime = await self.inverter.read_runtime_data()
+        except RequestFailedException as ex:
+            # UDP to the inverter is unreliable by definition. Isolated misses
+            # are normal, so availability is only questioned after three
+            # consecutive failures.
+            if ex.consecutive_failures_count < 3:
+                _LOGGER.debug(
+                    "No response received (streak of %d)", ex.consecutive_failures_count
+                )
+                return self._last_data
+            raise UpdateFailed(ex) from ex
+        except InverterError as ex:
+            raise UpdateFailed(ex) from ex
+
+        self._limits = await self.ems.async_read_battery_limits()
 
         await self._async_maybe_refresh_prices()
 
-        series = self._prices.actionable_series()
-        decision = plan(series, self._battery_state(live), self.dispatch_config)
+        decision = plan(
+            self._prices.actionable_series(),
+            self._battery_state(runtime),
+            self.dispatch_config,
+        )
 
         if self._dispatch_enabled:
             await self._async_apply(decision)
         else:
             decision = DispatchDecision(
-                DISPATCH_IDLE, decision.ems_mode, 0, "Dispecerizarea pe preț este oprită",
-                decision.charge_window, decision.discharge_window,
-                decision.charge_price, decision.discharge_price,
+                DISPATCH_IDLE,
+                decision.ems_mode,
+                0,
+                "Price dispatch is switched off",
+                decision.charge_window,
+                decision.discharge_window,
+                decision.charge_price,
+                decision.discharge_price,
             )
 
-        return GoodweEmsData(
-            inverter=inverter_state,
-            live=live,
-            series=self._prices.series,
-            decision=decision,
-            monthly_weighted=self._prices.monthly_weighted,
-            dispatch_enabled=self._dispatch_enabled,
-        )
+        self.decision = decision
+        return runtime
 
     async def _async_maybe_refresh_prices(self) -> None:
         now = datetime.now(RO_TZ)
         series = self._prices.series
-        # Condiția trebuie să fie aceeași cu cea din `is_actionable`. Dacă aici
-        # se verifica doar ziua, o serie descărcată la 00:05 ieșea din valabilitate
-        # pe la 18:05, dar rămânea „proaspătă" pentru gardul de mai jos și nu se
-        # mai reîncerca niciodată — dispecerizarea murea tăcut exact peste vârful
-        # de seară, în fiecare zi, pe orice instanță care nu se repornește.
+        # This condition has to match `is_actionable`. Checking only the day
+        # here meant a series fetched at 00:05 stopped being actionable around
+        # 18:05 but still counted as "fresh" for the guard below, so it was
+        # never retried: dispatch died silently right across the evening peak,
+        # every day, on any instance that does not get restarted.
         fresh = series is not None and series.is_actionable(now)
 
         should_retry = self._last_price_attempt is None or (
@@ -223,41 +283,44 @@ class GoodweEmsCoordinator(DataUpdateCoordinator[GoodweEmsData]):
             self._last_price_attempt = now
             try:
                 await self._prices.async_refresh()
-            except (PriceError, Exception) as err:  # noqa: BLE001 - orice eroare de rețea
-                _LOGGER.warning("Împrospătarea prețurilor PZU a eșuat: %s", err)
+            except (PriceError, Exception) as err:  # noqa: BLE001 - any network error
+                _LOGGER.warning("Refreshing PZU prices failed: %s", err)
 
         if self._last_monthly_day != now.date():
             self._last_monthly_day = now.date()
             try:
                 await self._prices.async_refresh_monthly()
             except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("Prețul mediu ponderat lunar indisponibil: %s", err)
+                _LOGGER.debug("Monthly weighted price unavailable: %s", err)
 
     async def _async_apply(self, decision: DispatchDecision) -> None:
-        """Rescrie comanda EMS la fiecare ciclu.
+        """Rewrite the EMS command every cycle.
 
-        Rescrierea nu e redundantă: 47511 și 47512 sunt volatile, iar un reboot
-        de invertor le golește în tăcere. `async_set_ems` face readback, deci o
-        discordanță apare în jurnal în loc să treacă neobservată.
+        Not redundant: 47511 and 47512 are volatile and an inverter reboot
+        silently empties them. `async_set_ems` reads back, so a disagreement
+        shows up in the log instead of passing unnoticed.
         """
-        target = (decision.ems_mode, decision.power_w)
+        target = (int(decision.ems_mode), decision.power_w)
         try:
-            await self.inverter.async_set_ems(*target)
-        except ModbusError as err:
-            _LOGGER.error("Aplicarea deciziei %s a eșuat: %s", decision.state, err)
+            await self.ems.async_set_ems(decision.ems_mode, decision.power_w)
+        except (InverterError, ValueError) as err:
+            _LOGGER.error("Applying decision %s failed: %s", decision.state, err)
             return
 
         if target != self._last_written:
             _LOGGER.info(
-                "Dispecerizare -> %s (%#06x @ %s W): %s",
-                decision.state, decision.ems_mode, decision.power_w, decision.reason,
+                "Dispatch -> %s (%s @ %s W): %s",
+                decision.state,
+                decision.ems_mode.name,
+                decision.power_w,
+                decision.reason,
             )
             self._last_written = target
 
     async def async_shutdown_inverter(self) -> None:
-        """La descărcarea integrării, invertorul nu rămâne pe o comandă forțată."""
+        """On unload, do not leave the inverter on a forced command."""
         if self._dispatch_enabled:
             try:
-                await self.inverter.async_auto()
-            except ModbusError as err:
-                _LOGGER.debug("Revenirea în Auto la oprire a eșuat: %s", err)
+                await self.ems.async_auto()
+            except (InverterError, ValueError) as err:
+                _LOGGER.debug("Returning to Auto on shutdown failed: %s", err)

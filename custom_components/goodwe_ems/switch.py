@@ -1,116 +1,157 @@
-"""Comutatoarele de control ale invertorului."""
+"""Inverter control switches, plus the price dispatch switch."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from goodwe import InverterError
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_OFF, STATE_ON
+from homeassistant.const import STATE_OFF, STATE_ON, EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN
-from .coordinator import GoodweEmsCoordinator
+from .const import (
+    DOMAIN,
+    REG_ANTI_BACKFLOW,
+    REG_CHARGE_DISCHARGE_ENABLE,
+)
+from .coordinator import GoodweEmsConfigEntry, GoodweEmsCoordinator
+from .ems import GoodweEms
 from .entity import GoodweEmsEntity
-from .inverter import GoodweInverter, InverterState
+
+_LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 1
 
 
 @dataclass(frozen=True, kw_only=True)
-class GoodweSwitchDescription(SwitchEntityDescription):
-    value_fn: Callable[[InverterState], bool | None]
-    set_fn: Callable[[GoodweInverter, bool], Awaitable[None]]
+class GoodweSwitchEntityDescription(SwitchEntityDescription):
+    """Describes a GoodWe switch entity."""
+
+    getter: Callable[[GoodweEms], Awaitable[int]]
+    setter: Callable[[GoodweEms, bool], Awaitable[None]]
 
 
-SWITCHES: tuple[GoodweSwitchDescription, ...] = (
-    GoodweSwitchDescription(
+def _register_switch(
+    key: str, register: int, **kwargs
+) -> GoodweSwitchEntityDescription:
+    return GoodweSwitchEntityDescription(
+        key=key,
+        translation_key=key,
+        getter=lambda ems, r=register: ems.async_read_register(r),
+        setter=lambda ems, value, r=register: ems.async_write_register(r, int(value)),
+        **kwargs,
+    )
+
+
+SWITCHES: tuple[GoodweSwitchEntityDescription, ...] = (
+    GoodweSwitchEntityDescription(
         key="export_limit_enable",
-        icon="mdi:transmission-tower-export",
-        value_fn=lambda s: s.feed_power_enable,
-        set_fn=lambda inv, v: inv.async_set_export_limit_enabled(v),
+        translation_key="export_limit_enable",
+        getter=lambda ems: ems.inverter.read_setting("grid_export"),
+        setter=lambda ems, value: ems.inverter.write_setting(
+            "grid_export", int(value)
+        ),
     ),
-    GoodweSwitchDescription(
-        key="anti_backflow",
-        icon="mdi:transmission-tower-off",
-        entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.anti_backflow,
-        set_fn=lambda inv, v: inv.async_set_anti_backflow(v),
-    ),
-    GoodweSwitchDescription(
-        key="charge_discharge_enable",
-        icon="mdi:battery-sync",
-        entity_category=EntityCategory.CONFIG,
-        value_fn=lambda s: s.charge_discharge_enable,
-        set_fn=lambda inv, v: inv.async_set_charge_discharge_enabled(v),
-    ),
-    GoodweSwitchDescription(
+    GoodweSwitchEntityDescription(
         key="fast_charge",
-        icon="mdi:battery-charging-high",
-        value_fn=lambda s: None if s.fast_charge_enable is None else bool(s.fast_charge_enable),
-        set_fn=lambda inv, v: inv.async_set_fast_charge(v),
+        translation_key="fast_charge",
+        getter=lambda ems: ems.inverter.read_setting("fast_charging"),
+        setter=lambda ems, value: ems.inverter.write_setting(
+            "fast_charging", int(value)
+        ),
+    ),
+    _register_switch(
+        "anti_backflow",
+        REG_ANTI_BACKFLOW,
+        entity_category=EntityCategory.CONFIG,
+    ),
+    _register_switch(
+        "charge_discharge_enable",
+        REG_CHARGE_DISCHARGE_ENABLE,
+        entity_category=EntityCategory.CONFIG,
     ),
 )
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    config_entry: GoodweEmsConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    coordinator: GoodweEmsCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities: list[SwitchEntity] = [
-        GoodweEmsSwitch(coordinator, description) for description in SWITCHES
-    ]
-    entities.append(DispatchSwitch(coordinator))
+    """Set up the switch entities from a config entry."""
+    data = config_entry.runtime_data
+    entities: list[SwitchEntity] = []
+
+    for description in SWITCHES:
+        try:
+            current = await description.getter(data.ems)
+        except (InverterError, ValueError):
+            _LOGGER.debug("Inverter does not support setting %s", description.key)
+            continue
+        entities.append(
+            GoodweEmsSwitch(data.device_info, description, data.ems, bool(current))
+        )
+
+    entities.append(DispatchSwitch(data.coordinator, data.device_info))
     async_add_entities(entities)
 
 
-class GoodweEmsSwitch(GoodweEmsEntity, SwitchEntity):
-    """Comutator legat direct de un registru."""
+class GoodweEmsSwitch(SwitchEntity):
+    """A switch backed directly by an inverter setting."""
 
-    entity_description: GoodweSwitchDescription
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    entity_description: GoodweSwitchEntityDescription
 
     def __init__(
-        self, coordinator: GoodweEmsCoordinator, description: GoodweSwitchDescription
+        self,
+        device_info: DeviceInfo,
+        description: GoodweSwitchEntityDescription,
+        ems: GoodweEms,
+        current_value: bool,
     ) -> None:
-        super().__init__(coordinator, description.key)
         self.entity_description = description
-
-    @property
-    def is_on(self) -> bool | None:
-        state = self.inverter
-        return self.entity_description.value_fn(state) if state else None
-
-    @property
-    def available(self) -> bool:
-        return super().available and self.is_on is not None
+        self._attr_unique_id = (
+            f"{DOMAIN}-{description.key}-{ems.inverter.serial_number}"
+        )
+        self._attr_device_info = device_info
+        self._attr_is_on = current_value
+        self._ems = ems
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.entity_description.set_fn(self.coordinator.inverter, True)
-        await self.coordinator.async_request_refresh()
+        await self._async_set(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.entity_description.set_fn(self.coordinator.inverter, False)
-        await self.coordinator.async_request_refresh()
+        await self._async_set(False)
+
+    async def _async_set(self, value: bool) -> None:
+        await self.entity_description.setter(self._ems, value)
+        self._attr_is_on = value
+        self.async_write_ha_state()
 
 
 class DispatchSwitch(GoodweEmsEntity, RestoreEntity, SwitchEntity):
-    """Pornește sau oprește dispecerizarea pe preț.
+    """Turn price dispatch on or off.
 
-    E singura entitate care nu corespunde unui registru: starea trăiește în
-    coordinator. La oprire, invertorul e readus explicit în modul Auto.
+    The only entity with no register behind it: the state lives in the
+    coordinator. Turning it off returns the inverter to Auto explicitly.
 
-    Coordinatorul o ține doar în memorie, deci starea se reia din ultima stare
-    a entității. Opțiunea `enable_dispatch` din configurare rămâne valoarea de
-    pornire la prima instalare; după aceea comutatorul e sursa de adevăr.
+    Because the coordinator only holds it in memory, the state is restored from
+    the entity's last state. The `enable_dispatch` config option remains the
+    starting value at first install; after that the switch is the source of
+    truth.
     """
 
-    _attr_icon = "mdi:cash-clock"
-
-    def __init__(self, coordinator: GoodweEmsCoordinator) -> None:
-        super().__init__(coordinator, "price_dispatch")
+    def __init__(
+        self, coordinator: GoodweEmsCoordinator, device_info: DeviceInfo
+    ) -> None:
+        super().__init__(coordinator, device_info, "price_dispatch")
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

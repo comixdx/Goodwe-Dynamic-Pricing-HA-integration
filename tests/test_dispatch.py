@@ -21,6 +21,8 @@ _pkg = types.ModuleType("goodwe_ems")
 _pkg.__path__ = [str(ROOT / "goodwe_ems")]
 sys.modules.setdefault("goodwe_ems", _pkg)
 
+from goodwe import EMSMode  # noqa: E402
+
 from goodwe_ems import dispatch  # noqa: E402
 from goodwe_ems.dispatch import BatteryState  # noqa: E402
 from goodwe_ems.const import (  # noqa: E402
@@ -29,7 +31,6 @@ from goodwe_ems.const import (  # noqa: E402
     DISPATCH_DISCHARGE,
     DISPATCH_HOLD,
     DISPATCH_UNAVAILABLE,
-    EMS_BATTERY_STANDBY,
 )
 from goodwe_ems.pzu_prices import (  # noqa: E402
     RO_TZ,
@@ -202,13 +203,13 @@ def test_flat_day_never_arbitrages() -> None:
 def test_missing_prices_fall_back_to_auto() -> None:
     decision = dispatch.plan(None, BatteryState(soc=50), CONFIG)
     assert decision.state == DISPATCH_UNAVAILABLE
-    assert decision.ems_mode == 0x0001  # EMS Auto, nu inacțiune
+    assert decision.ems_mode is EMSMode.AUTO  # EMS Auto, nu inacțiune
 
 
 def test_missing_soc_falls_back_to_auto() -> None:
     decision = dispatch.plan(_series(), BatteryState(soc=None), CONFIG)
     assert decision.state == DISPATCH_UNAVAILABLE
-    assert decision.ems_mode == 0x0001
+    assert decision.ems_mode is EMSMode.AUTO
 
 
 # --------------------------------------------------------------------------
@@ -231,7 +232,7 @@ def test_holds_a_full_battery_for_the_peak() -> None:
     """
     decision = dispatch.plan(_series(), BatteryState(soc=95), CONFIG_HOLD, now=_at(16))
     assert decision.state == DISPATCH_HOLD
-    assert decision.ems_mode == EMS_BATTERY_STANDBY
+    assert decision.ems_mode is EMSMode.BATTERY_STANDBY
     assert decision.power_w == 0
 
 
@@ -328,7 +329,7 @@ def test_bms_capacity_overrides_configured_value() -> None:
 def test_bms_values_ignored_when_both_zero() -> None:
     """Registrele nepopulate (0 și 0) nu trebuie să blocheze dispecerizarea.
 
-    Filtrul e în readings.py; aici verificăm doar că None înseamnă „ignoră".
+    Filtrul e în ems.py; aici verificăm doar că None înseamnă „ignoră".
     """
     battery = BatteryState(soc=20, capacity_kwh=10.0,
                            charge_allow_kwh=None, discharge_allow_kwh=None)

@@ -1,0 +1,50 @@
+{
+  "entity": {
+    "button": {
+      "synchronize_clock": { "default": "mdi:clock-check-outline" },
+      "clear_economic_schedule": { "default": "mdi:calendar-remove" }
+    },
+    "number": {
+      "export_limit_power": { "default": "mdi:transmission-tower-export" },
+      "export_limit_percent": { "default": "mdi:transmission-tower-export" },
+      "ems_power": { "default": "mdi:flash" },
+      "battery_charge_limit": { "default": "mdi:battery-arrow-up" },
+      "battery_discharge_limit": { "default": "mdi:battery-arrow-down" },
+      "battery_discharge_depth": { "default": "mdi:battery-arrow-down" },
+      "inverter_ac_limit": { "default": "mdi:sine-wave" },
+      "min_discharge_soc": { "default": "mdi:battery-low" },
+      "max_charge_soc": { "default": "mdi:battery-high" },
+      "fast_charge_stop_soc": { "default": "mdi:battery-charging-100" },
+      "start_charge_soc": { "default": "mdi:battery-charging-outline" },
+      "stop_charge_soc": { "default": "mdi:battery-charging-outline" }
+    },
+    "select": {
+      "operation_mode": { "default": "mdi:solar-power-variant" },
+      "ems_mode": { "default": "mdi:home-battery" }
+    },
+    "sensor": {
+      "pzu_price": { "default": "mdi:cash" },
+      "pzu_average_today": { "default": "mdi:chart-line" },
+      "pzu_min_today": { "default": "mdi:chart-line" },
+      "pzu_max_today": { "default": "mdi:chart-line" },
+      "pzu_spread_today": { "default": "mdi:chart-line" },
+      "pzu_monthly_weighted": { "default": "mdi:calendar-month" },
+      "dispatch_state": { "default": "mdi:calendar-clock" }
+    },
+    "switch": {
+      "export_limit_enable": { "default": "mdi:transmission-tower-export" },
+      "anti_backflow": { "default": "mdi:transmission-tower-off" },
+      "charge_discharge_enable": { "default": "mdi:battery-sync" },
+      "fast_charge": { "default": "mdi:battery-charging-high" },
+      "price_dispatch": { "default": "mdi:cash-clock" }
+    }
+  },
+  "services": {
+    "set_ems_mode": "mdi:home-battery",
+    "set_export_limit": "mdi:transmission-tower-export",
+    "force_charge": "mdi:battery-arrow-up",
+    "force_discharge": "mdi:battery-arrow-down",
+    "stop_forcing": "mdi:autorenew",
+    "clear_economic_schedule": "mdi:calendar-remove"
+  }
+}

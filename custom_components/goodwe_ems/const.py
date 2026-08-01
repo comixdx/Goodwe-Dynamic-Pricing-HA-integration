@@ -1,41 +1,42 @@
-"""Constante și harta de registre pentru GoodWe EMS.
+"""Constants for the GoodWe EMS integration.
 
-Sursa registrelor: GoodWe ARM 745 Modbus Protocol Map, revizia 28.03.2025.
-Toate adresele sunt holding registers (funcție 0x03 citire / 0x06 scriere).
+The Modbus register map that used to live here is gone: the `goodwe` library
+owns the protocol now and addresses its registers by name. What remains are the
+few registers the library does not name, which are reached through its
+`modbus<address>` pseudo-settings escape hatch (see `ems.py`), plus the
+configuration and dispatch constants that are ours alone.
+
+Register source: GoodWe ARM 745 Modbus Protocol Map, revision 28.03.2025.
 """
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Final
 
 DOMAIN: Final = "goodwe_ems"
 MANUFACTURER: Final = "GoodWe"
 DEFAULT_NAME: Final = "GoodWe EMS"
 
+# Plain strings rather than the `Platform` enum on purpose: this module stays
+# importable without Home Assistant, which is what lets the dispatch and EMS
+# logic be unit-tested on its own. `async_forward_entry_setups` accepts either.
+PLATFORMS: Final = ["button", "number", "select", "sensor", "switch"]
+
 # --------------------------------------------------------------------------
-# Comunicație
+# Connection
 # --------------------------------------------------------------------------
 
-CONF_CONNECTION: Final = "connection"
-CONF_HOST: Final = "host"
-CONF_PORT: Final = "port"
-CONF_SERIAL_PORT: Final = "serial_port"
-CONF_BAUDRATE: Final = "baudrate"
-CONF_SLAVE: Final = "slave"
+# Stored on the config entry so a reload reconnects to the same protocol family
+# instead of paying for discovery again. Same key name as the core integration.
+CONF_MODEL_FAMILY: Final = "model_family"
+
 CONF_SCAN_INTERVAL: Final = "scan_interval"
-
-CONNECTION_TCP: Final = "tcp"
-CONNECTION_RTU_OVER_TCP: Final = "rtu_over_tcp"
-CONNECTION_SERIAL: Final = "serial"
-CONNECTION_TYPES: Final = [CONNECTION_TCP, CONNECTION_RTU_OVER_TCP, CONNECTION_SERIAL]
-
-DEFAULT_PORT: Final = 502
-DEFAULT_BAUDRATE: Final = 9600
-DEFAULT_SLAVE: Final = 247  # 0xF7, adresa implicită GoodWe
-DEFAULT_SCAN_INTERVAL: Final = 30  # secunde
+DEFAULT_SCAN_INTERVAL: Final = 30  # seconds
+MIN_SCAN_INTERVAL: Final = timedelta(seconds=10)
 
 # --------------------------------------------------------------------------
-# Configurare baterie și dispecerizare
+# Battery and dispatch configuration
 # --------------------------------------------------------------------------
 
 CONF_BATTERY_CAPACITY: Final = "battery_capacity_kwh"
@@ -56,93 +57,61 @@ DEFAULT_MAX_DISCHARGE_POWER: Final = 4600
 DEFAULT_MIN_SOC: Final = 15
 DEFAULT_TARGET_SOC: Final = 95
 DEFAULT_ROUND_TRIP_EFFICIENCY: Final = 0.90
-DEFAULT_CYCLE_COST: Final = 150.0  # lei/MWh ciclat, uzură + pierderi
+DEFAULT_CYCLE_COST: Final = 150.0  # lei/MWh cycled: wear plus losses
 DEFAULT_HOLD_FOR_PEAK: Final = False
 
 # --------------------------------------------------------------------------
-# 1. Limitare export / anti-backflow
+# Registers the library does not name
+#
+# Passed to `read_setting` / `write_setting` as "modbus<address>", which the
+# library forwards to a raw single-register read or write. Anything the library
+# *does* name (ems_mode, ems_power_limit, grid_export, fast_charging, ...) is
+# addressed by its library id instead and is deliberately absent here.
 # --------------------------------------------------------------------------
 
-REG_FEED_POWER_ENABLE: Final = 47509  # U16 RW, 0/1
-REG_FEED_POWER_PARAM: Final = 47510  # S16 RW, -30000..30000 W
-REG_FEED_POWER_ENABLE_PARALLEL: Final = 42003  # U16 RW, montaj paralel / >30 kW
-REG_ALLOWABLE_ONGRID_POWER: Final = 42004  # S32 RW, W
-REG_ANTI_BACKFLOW: Final = 46708  # U16 RW, comutator general
+# EMS arming. Without manufacturer code 2 in 47505 the inverter silently
+# ignores every write to the EMS mode register.
+REG_MANUFACTURER_CODE: Final = 47505
+MANUFACTURER_CODE_EMS: Final = 2
+
+# Export limit parameter. The library names 47510 as `grid_export_limit`, but
+# types it unsigned, so a negative value (forced import) cannot be written
+# through the named setting.
+REG_FEED_POWER_PARAM: Final = 47510
+REG_ANTI_BACKFLOW: Final = 46708
+
+REG_MIN_DISCHARGE_SOC: Final = 45558
+REG_MAX_CHARGE_SOC: Final = 45559
+REG_CHARGE_DISCHARGE_ENABLE: Final = 45564
+REG_BATTERY_CHARGE_LIMIT: Final = 45565
+REG_BATTERY_DISCHARGE_LIMIT: Final = 45566
+REG_INVERTER_AC_LIMIT: Final = 45567
+
+REG_START_CHARGE_SOC: Final = 47531  # scaled by 10
+REG_STOP_CHARGE_SOC: Final = 47532  # scaled by 10
+REG_CLEAR_ECONOMIC_SCHEDULE: Final = 47533
+
+# BMS block. Two 16-bit halves of a 32-bit Wh value each, because the
+# pseudo-setting reads exactly one register at a time.
+REG_CHARGE_ALLOW_WH: Final = 10476
+REG_DISCHARGE_ALLOW_WH: Final = 10478
+REG_BMS_RATED_CAPACITY: Final = 37076  # 0.1 kWh steps
+
+SOC_SCALE: Final = 10  # for 47531 / 47532
 
 FEED_POWER_MIN: Final = -30000
 FEED_POWER_MAX: Final = 30000
-
-# --------------------------------------------------------------------------
-# 2. Comandă încărcare / descărcare baterie (EMS)
-# --------------------------------------------------------------------------
-
-REG_MANUFACTURER_CODE: Final = 47505  # U16 RW, trebuie 2 pentru EMS
-REG_EMS_POWER_MODE: Final = 47511  # U16 RW, VOLATIL (Save = N)
-REG_EMS_POWER_SET: Final = 47512  # U16 RW, 0..10000 W, VOLATIL (Save = N)
-
-MANUFACTURER_CODE_EMS: Final = 2
-
-EMS_AUTO: Final = 0x0001
-EMS_CHARGE_PV: Final = 0x0002
-EMS_DISCHARGE_PV: Final = 0x0003
-EMS_IMPORT_AC: Final = 0x0004
-EMS_EXPORT_AC: Final = 0x0005
-EMS_BATTERY_STANDBY: Final = 0x0008
-EMS_CHARGE_BAT: Final = 0x000B
-EMS_DISCHARGE_BAT: Final = 0x000C
-EMS_STOPPED: Final = 0x00FF
-
-EMS_MODES: Final[dict[str, int]] = {
-    "auto": EMS_AUTO,
-    "charge_pv": EMS_CHARGE_PV,
-    "discharge_pv": EMS_DISCHARGE_PV,
-    "import_ac": EMS_IMPORT_AC,
-    "export_ac": EMS_EXPORT_AC,
-    "battery_standby": EMS_BATTERY_STANDBY,
-    "charge_bat": EMS_CHARGE_BAT,
-    "discharge_bat": EMS_DISCHARGE_BAT,
-    "stopped": EMS_STOPPED,
-}
-EMS_MODES_REVERSE: Final[dict[int, str]] = {v: k for k, v in EMS_MODES.items()}
-
-EMS_POWER_MIN: Final = 0
 EMS_POWER_MAX: Final = 10000
-
-# --------------------------------------------------------------------------
-# 3. Încărcare din AC (rețea)
-# --------------------------------------------------------------------------
-
-REG_FAST_CHARGE_ENABLE: Final = 47545  # U16 RW, 0..3, VOLATIL
-REG_FAST_CHARGE_STOP_SOC: Final = 47546  # U16 RW, 1..100 %
-REG_OFFGRID_CHARGE_ENABLE: Final = 20332  # U16 RW, 0/1, doar off-grid
-
-# --------------------------------------------------------------------------
-# 4. Control încărcare / descărcare (limite și praguri)
-# --------------------------------------------------------------------------
-
-REG_CHARGE_DISCHARGE_ENABLE: Final = 45564  # U16 RW, 0/1
-REG_BATTERY_CHARGE_LIMIT: Final = 45565  # U16 RW, 0..4600 W
-REG_BATTERY_DISCHARGE_LIMIT: Final = 45566  # U16 RW, 0..4600 W
-REG_INVERTER_AC_LIMIT: Final = 45567  # U16 RW, 0..4600 W
-REG_MIN_DISCHARGE_SOC: Final = 45558  # U16 RW, 0..100 %
-REG_MAX_CHARGE_SOC: Final = 45559  # U16 RW, 0..100 %
-REG_DISCHARGE_DURATION: Final = 45560  # U16 RW, s
-REG_DISCHARGE_POWER_DELTA: Final = 45561  # U16 RW, W
-REG_CHARGE_DURATION: Final = 45562  # U16 RW, s
-REG_CHARGE_POWER_DELTA: Final = 45563  # U16 RW, W
-REG_START_CHARGE_SOC: Final = 47531  # U16 RW, scalare 10
-REG_STOP_CHARGE_SOC: Final = 47532  # U16 RW, scalare 10
-REG_CLEAR_ECONOMIC_SCHEDULE: Final = 47533  # U16 W
-REG_PEAK_SHAVING_POWER: Final = 47542  # U32 RW, W
-REG_PEAK_SHAVING_SOC: Final = 47544  # U16 RW, %
-
-REG_MODBUS_ADDRESS: Final = 45127  # U16 RW, adresa slave
-
 BATTERY_POWER_MAX: Final = 4600
-SOC_SCALE: Final = 10  # pentru 47531 / 47532
 
 # --------------------------------------------------------------------------
-# Stări de dispecerizare
+# Runtime sensor ids read from the library
+# --------------------------------------------------------------------------
+
+SENSOR_BATTERY_SOC: Final = "battery_soc"
+
+# --------------------------------------------------------------------------
+# Dispatch states
 # --------------------------------------------------------------------------
 
 DISPATCH_IDLE: Final = "idle"
@@ -153,7 +122,7 @@ DISPATCH_HOLD: Final = "hold"
 DISPATCH_UNAVAILABLE: Final = "unavailable"
 
 # --------------------------------------------------------------------------
-# Servicii
+# Services
 # --------------------------------------------------------------------------
 
 SERVICE_SET_EMS_MODE: Final = "set_ems_mode"
@@ -162,5 +131,3 @@ SERVICE_FORCE_CHARGE: Final = "force_charge"
 SERVICE_FORCE_DISCHARGE: Final = "force_discharge"
 SERVICE_STOP_FORCING: Final = "stop_forcing"
 SERVICE_CLEAR_SCHEDULE: Final = "clear_economic_schedule"
-
-PLATFORMS: Final = ["sensor", "switch", "number", "select"]

@@ -15,10 +15,13 @@ set_ems_mode:
             - discharge_pv
             - import_ac
             - export_ac
+            - conserve
+            - off_grid
             - battery_standby
-            - charge_bat
-            - discharge_bat
-            - stopped
+            - buy_power
+            - sell_power
+            - charge_battery
+            - discharge_battery
     power:
       required: false
       default: 0

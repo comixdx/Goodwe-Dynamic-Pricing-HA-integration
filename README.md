@@ -1,37 +1,28 @@
 # GoodWe EMS
 
-Integrare Home Assistant pentru controlul invertoarelor hibride GoodWe ET prin Modbus, cu dispecerizare a bateriei după prețul PZU.
+Integrare Home Assistant pentru controlul invertoarelor hibride GoodWe, cu dispecerizare a bateriei după prețul PZU.
 
-Registrele provin din **GoodWe ARM 745 Modbus Protocol Map, revizia 28.03.2025**.
+Comunicația e făcută de biblioteca [`goodwe`](https://pypi.org/project/goodwe/) — aceeași pe care o folosește integrarea GoodWe oficială din Home Assistant. De acolo vin detectarea automată a familiei (ET/EH/BT/BH, ES/EM/BP, DT/MS/NS/XS), alegerea portului și harta de registre. Peste ea, integrarea asta adaugă comanda EMS și dispecerizarea pe preț, care lipsesc din cea oficială.
+
+Registrele pe care biblioteca nu le numește (armarea EMS în 47505, 46708, 45558–45567, 47531–47533, blocul BMS) sunt accesate prin pseudo-setările `modbus_<adresă>`, tot ale ei. Sursa lor: **GoodWe ARM 745 Modbus Protocol Map, revizia 28.03.2025**.
 
 ---
 
 ## Ce face
 
-**Control invertor** — cele patru grupe de funcții din protocol:
+**Control invertor:**
 
-| Funcție | Registre |
+| Funcție | Cum |
 |---|---|
-| Limitare export / anti-backflow | 47509, 47510, 46708 |
-| Comandă încărcare/descărcare (EMS) | 47505, 47511, 47512 |
-| Încărcare din rețea | modurile EMS `0x0004` / `0x000B`, plus 47545, 47546 |
+| Limitare export / anti-backflow | setările `grid_export`, `grid_export_limit`, plus 46708 |
+| Comandă încărcare/descărcare (EMS) | armare în 47505, apoi `ems_mode` / `ems_power_limit` |
+| Încărcare din rețea | modurile EMS `IMPORT_AC` / `CHARGE_BATTERY`, plus `fast_charging` |
 | Limite și praguri | 45558–45567, 47531, 47532, 47533 |
+| Mod de funcționare | `work_mode` (General, Back-up, Eco, Peak shaving…) |
 
-**Registre citite** (blocuri, o dată pe ciclu):
+**Telemetrie** — nu mai e o listă scrisă de mână. Entitățile se generează din `inverter.sensors()`, deci fiecare model expune exact senzorii pe care îi are, cu numele și unitățile declarate de bibliotecă.
 
-| Bloc | Conținut |
-|---|---|
-| 35001–35015 | putere nominală, serie, model — citite o singură dată |
-| 35105–35145 | putere PV1–PV4, putere totală invertor, activ/reactiv/aparent |
-| 35169–35212 | consum backup, consum total, putere baterie 1, contoare energie, module |
-| 35264–35268 | putere baterie 2, module pachet 2 |
-| 35301–35304 | putere PV totală, număr canale MPPT |
-| 37007–37009 | SOC, SOH |
-| 37056–37077 | energie totală încărcată/descărcată, capacitate nominală BMS1 |
-| 39074 | capacitate nominală BMS2 |
-| 10473–10480 | energie încărcabilă / descărcabilă permisă de BMS |
-
-**Telemetrie** — putere PV pe canal și totală, putere invertor, putere activă la contor, consum și consum backup, putere baterie pe pachet, SOC, SOH, capacitate nominală BMS, energie încărcabilă/descărcabilă și contoare de energie.
+**Diagnostice** — *Descarcă diagnosticele* de pe pagina dispozitivului dă starea completă: familie, firmware, toate setările citite, datele runtime, decizia de dispecerizare și starea seriei de prețuri.
 
 **Prețuri PZU** — serie de 96 de intervale de 15 minute (92 sau 100 în zilele de schimbare a orei), de la OPCOM, cu ENTSO-E ca rezervă. Plus prețul mediu ponderat lunar, care e baza de decontare a prosumatorului conform Ordinului ANRE 15/2022.
 
@@ -53,9 +44,22 @@ Apoi *Settings → Devices & Services → Add Integration → GoodWe EMS*.
 
 ---
 
+## Upgrade de la 1.x
+
+Versiunea 2.0 schimbă modul de comunicație: în loc de pymodbus și o hartă de registre scrisă de mână, se folosește biblioteca `goodwe`. Ce înseamnă asta la upgrade:
+
+- **Intrarea de configurare se migrează singură.** Adresa IP se păstrează, restul (tip conexiune, port, adresă slave) se aruncă și se re-detectează. Parametrii de baterie și dispecerizare rămân neatinși. Dacă invertorul doarme în momentul migrării, Home Assistant reîncearcă la următoarea pornire.
+- **Entitățile de telemetrie se refac.** Ele vin acum din biblioteca `goodwe`, deci au alte `unique_id`-uri și alte `entity_id`-uri, iar setul e mai bogat (tensiuni, curenți, temperaturi, MPPT). Cele vechi rămân în registru ca *restricted*; le ștergi din *Settings → Devices & Services → Entities*, filtrând după *Status: Unavailable*. Automatizările și tablourile care le foloseau trebuie repuse pe noile entități.
+- **Entitățile proprii integrării își păstrează cheile** — prețul PZU, starea dispecerizării, comutatorul de dispecerizare — dar și lor li se schimbă `unique_id`-ul, fiindcă e acum legat de seria invertorului, nu de intrarea de configurare.
+- **Conexiunile seriale și RTU peste TCP dispar.** Vezi nota de la pasul 1 al configurării.
+
+---
+
 ## Configurare
 
-**Pasul 1 — conexiune.** Tip (`Modbus TCP`, `RTU peste TCP` sau `serial`), adresa, și adresa slave. Implicit GoodWe răspunde pe **247** (0xF7), la 9600 bps.
+**Pasul 1 — conexiune.** Doar adresa IP a invertorului. Portul (UDP 8899 pentru un dongle Wi-Fi/LAN, Modbus TCP 502 pentru un modul Ethernet), familia și adresa de comunicație sunt detectate automat.
+
+> **Conexiunile seriale nu mai sunt posibile.** Biblioteca `goodwe` vorbește doar UDP și Modbus TCP, deci un adaptor RS485 legat direct la mașina cu Home Assistant, sau un gateway serial-Ethernet care face RTU peste TCP (Elfin, USR, Waveshare), nu mai funcționează. Dacă asta e situația ta, rămâi pe versiunea 1.4.0.
 
 **Pasul 2 — baterie și dispecerizare.**
 
@@ -72,7 +76,7 @@ Apoi *Settings → Devices & Services → Add Integration → GoodWe EMS*.
 
 ### Capacitatea și SOC-ul se citesc singure
 
-Capacitatea din configurare e doar o rezervă. Dacă BMS-ul răspunde la 37076 (și 39074, pe montaj cu două pachete), valoarea lui are prioritate. La fel SOC-ul: registrul 37007 e sursa preferată, iar senzorul extern rămâne opțional, ca plasă de siguranță pentru instalațiile pe care blocul BMS nu răspunde.
+Capacitatea din configurare e doar o rezervă. Dacă BMS-ul răspunde la 37076, valoarea lui are prioritate. La fel SOC-ul: senzorul `battery_soc` al bibliotecii e sursa preferată, iar senzorul extern rămâne opțional, ca plasă de siguranță pentru instalațiile pe care blocul BMS nu răspunde.
 
 ### Cum decide motorul cât poate încărca
 
@@ -104,17 +108,16 @@ type: custom:goodwe-energy-flow-card
 title: Flux energetic
 ```
 
-**Entitățile se descoperă singure.** Cardul citește registrul de entități, ia entitățile platformei `goodwe_ems` și le potrivește după cheia de traducere, nu după `entity_id`. Asta contează pentru că Home Assistant compune `entity_id`-ul din numele *tradus* al entității în momentul creării: pe o instanță în română senzorul de putere PV se numește `sensor.goodwe_ems_putere_pv`, nu `sensor.goodwe_ems_pv_power`. O listă scrisă de mână în YAML merge doar în limba în care a fost scrisă.
+**Entitățile se descoperă singure.** Cardul citește registrul de entități, ia entitățile platformei `goodwe_ems` și le potrivește după `unique_id`, nu după `entity_id`. Asta contează pentru că Home Assistant compune `entity_id`-ul din numele entității în momentul creării, iar acela se traduce. `unique_id`-ul are forma `goodwe_ems-{cheie}-{serie}`, iar cheile sunt id-urile de senzor ale bibliotecii: `ppv`, `house_consumption`, `active_power`, `pbattery1`, `battery_soc`.
 
 Orice câmp scris explicit are prioritate — descoperirea umple doar golurile:
 
 ```yaml
 type: custom:goodwe-energy-flow-card
 title: Flux energetic
-battery_power: sensor.pbattery1        # senzorul integrării GoodWe oficiale
-invert_battery: true                  # `pbattery1` e pozitiv la descărcare
 monthly_profit: sensor.castig_lunar   # opțional, îl faci tu — vezi mai jos
 min_flow_watts: 30
+invert_battery: false                 # comută dacă săgeata bateriei arată invers
 ```
 
 **Cu două invertoare** cardul ar amesteca entitățile, așa că ia un singur grup: cel mai complet. Pentru al doilea, dă-i intrarea de configurare — `config_entry_id`, din URL-ul paginii integrării (`.../config/integrations/integration/goodwe_ems` → click pe intrare):
@@ -156,18 +159,16 @@ card_mod:
 
 | Secțiune | Senzor |
 | --- | --- |
-| Grid consumption | `grid_import_energy` |
-| Return to grid | `grid_export_energy` |
-| Solar production | `pv_energy_total` |
-| Battery in / out | `total_charge_energy` / `total_discharge_energy` |
+| Grid consumption | `meter_e_total_imp` (*Meter Total Energy (import)*) |
+| Return to grid | `meter_e_total_exp` (*Meter Total Energy (export)*) |
+| Solar production | `e_total` (*Total PV Generation*) |
+| Battery in / out | `e_bat_charge_total` / `e_bat_discharge_total` |
 
-Dacă lista de selecție apare goală, senzorul nu îndeplinește [condițiile din FAQ-ul Energy](https://www.home-assistant.io/docs/energy/faq/#troubleshooting-missing-entities): domeniul `sensor`, `device_class` energie, `state_class` `total` sau `total_increasing` și unitatea kWh. Toți cei de mai sus le îndeplinesc.
+Dacă lista de selecție apare goală, senzorul nu îndeplinește [condițiile din FAQ-ul Energy](https://www.home-assistant.io/docs/energy/faq/#troubleshooting-missing-entities): domeniul `sensor`, `device_class` energie, `state_class` `total` sau `total_increasing` și unitatea kWh. Biblioteca declară unitatea kWh pentru toți cei de mai sus, iar integrarea le pune automat clasa și `state_class`-ul potrivite.
 
-**Senzorii de putere nu apar în listă și nu e o defecțiune.** `pv_power`, `ac_active_power` și `load_power` sunt wați cu `state_class: measurement`, ceea ce e corect pentru ce sunt; tabloul Energy consumă exclusiv kWh acumulați. Pentru putere instantanee ai cardul de flux.
+**Senzorii de putere nu apar în listă și nu e o defecțiune.** `ppv`, `active_power` și `house_consumption` sunt wați cu `state_class: measurement`, ceea ce e corect pentru ce sunt; tabloul Energy consumă exclusiv kWh acumulați. Pentru putere instantanee ai cardul de flux.
 
 Prețul îl legi tot de aici: la *Grid consumption → Use an entity with current price* alege `pzu_price`, care e deja în RON/kWh.
-
-**Verifică o dată producția totală** față de aplicația GoodWe. Pe majoritatea firmware-urilor 35191 raportează în pași de 0,1 kWh, dar există și variante care raportează în kWh întregi — dacă valoarea iese de zece ori mai mică decât în app, acolo e cauza. Contoarele nepopulate sunt deja filtrate: un registru care întoarce 0xFFFFFFFF ar însemna 429 GWh și ar rămâne pe veci în statisticile de lungă durată, așa că peste un prag imposibil senzorul se raportează indisponibil în loc să scrie valoarea.
 
 ### Câștigul lunar nu vine din integrare
 
@@ -178,7 +179,7 @@ Prețul îl legi tot de aici: la *Grid consumption → Use an entity with curren
 ```yaml
 utility_meter:
   export_lunar:
-    source: sensor.goodwe_ems_energie_exportata_in_retea   # kWh injectați
+    source: sensor.goodwe_ems_meter_total_energy_export    # kWh injectați
     cycle: monthly
 
 template:
@@ -197,7 +198,7 @@ Aici `entity_id`-ul îl scrii tu, deci verifică-l în *Developer Tools → Stat
 
 **E o estimare, nu suma de pe factură.** OPCOM publică prețul mediu ponderat al unei luni abia la începutul lunii următoare, deci `pzu_monthly_weighted` conține luna trecută, iar `export_lunar` numără luna curentă. Cât timp luna e în curs, înmulțești kilowații de acum cu prețul de luna trecută. Valoarea se așază pe cea reală abia după ce OPCOM publică, iar Ordinul ANRE 15/2022 cere prețul lunii proprii. Formula e aceeași cu `monthly_settlement()` din `pzu_prices.py`.
 
-**Semnele.** Harta ARM 745 nu documentează convenția de semn pentru 35139 (putere activă la contor) și 35182 (putere baterie). Uită-te o dată la card cu bateria vizibil în încărcare și cu surplus injectat în rețea; dacă o săgeată arată invers, comută flagul corespunzător. Dacă folosești în schimb senzorii integrării GoodWe oficiale, `pbattery1` e pozitiv la descărcare, deci acolo îți trebuie `invert_battery: true`.
+**Semnele.** Convenția de semn pentru `active_power` (putere activă la contor) și `pbattery1` (putere baterie) diferă între modele și nu e documentată în harta ARM 745. Uită-te o dată la card cu bateria vizibil în încărcare și cu surplus injectat în rețea; dacă o săgeată arată invers, comută `invert_grid` sau `invert_battery`.
 
 ---
 
@@ -215,12 +216,14 @@ Ca ultimă soluție, adaugă-l manual ca resursă Lovelace de tip *JavaScript Mo
 
 | Serviciu | Efect |
 |---|---|
-| `goodwe_ems.set_ems_mode` | scrie 47505 → 47512 → 47511, în ordinea cerută de invertor |
+| `goodwe_ems.set_ems_mode` | armează 47505, apoi scrie puterea și modul, în ordinea cerută de invertor |
 | `goodwe_ems.set_export_limit` | scrie parametrul, apoi activarea |
-| `goodwe_ems.force_charge` | mod Charge-BAT, completare din rețea |
-| `goodwe_ems.force_discharge` | mod Discharge-BAT |
+| `goodwe_ems.force_charge` | mod EMS `CHARGE_BATTERY`, completare din rețea |
+| `goodwe_ems.force_discharge` | mod EMS `DISCHARGE_BATTERY` |
 | `goodwe_ems.stop_forcing` | revenire în autoconsum |
-| `goodwe_ems.clear_economic_schedule` | golește sloturile 47515–47530 prin 47533 |
+| `goodwe_ems.clear_economic_schedule` | golește sloturile programului economic prin 47533 |
+
+Ultimele două există și ca butoane pe pagina dispozitivului, alături de *Sincronizează ceasul*.
 
 ---
 
@@ -236,8 +239,6 @@ Ca ultimă soluție, adaugă-l manual ca resursă Lovelace de tip *JavaScript Mo
 
 ## De verificat înainte de producție
 
-**Registrul 35001 (Rate Power).** Harta nu precizează unitatea. Pe ET se citește de regulă direct în W, dar verific-o printr-o citire efectivă înainte s-o folosești ca divizor pentru procente. Integrarea o expune doar ca atribut de dispozitiv, nu o folosește în calcule.
-
 **Parserul OPCOM** (`OpcomSource._extract_values`) a fost construit dintr-o randare textuală a paginii, nu din DOM-ul real. Euristica e „prețurile sunt singurele celule cu zecimale, iar prima de pe rând e agregatul zilnic". Verific-o cu un test pe HTML salvat înainte de a te baza pe ea.
 
 Până atunci ești protejat de validarea din `PriceSeries.__post_init__`: orice parsare care nu dă exact 92/96/100 valori plauzibile ridică `PriceError` și trece pe ENTSO-E, în loc să întoarcă o serie coruptă.
@@ -247,11 +248,11 @@ Până atunci ești protejat de validarea din `PriceSeries.__post_init__`: orice
 ## Teste
 
 ```bash
-pip install pytest
+pip install pytest pytest-asyncio goodwe beautifulsoup4
 pytest tests/
 ```
 
-Testele acoperă logica pură — validarea seriei, numărarea intervalelor la schimbarea orei, ferestrele de arbitraj, limitele BMS și decodarea blocurilor de telemetrie (cu un client Modbus simulat) — fără să aibă nevoie de Home Assistant sau de un invertor.
+Testele acoperă logica pură — validarea seriei de prețuri, numărarea intervalelor la schimbarea orei, ferestrele de arbitraj, limitele BMS — plus stratul de control EMS cu un invertor simulat: armarea în 47505, ordinea scrierilor, citirea de verificare și recombinarea valorilor pe 32 de biți. Nu au nevoie de Home Assistant și nici de un invertor real.
 
 ---
 
