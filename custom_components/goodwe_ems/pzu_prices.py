@@ -26,7 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 
 RO_TZ = ZoneInfo("Europe/Bucharest")
 
-OPCOM_HOME = "https://www.opcom.ro/pp/index.php"
+OPCOM_HOME = "https://www.opcom.ro/acasa/ro"
 ENTSOE_API = "https://web-api.tp.entsoe.eu/api"
 ENTSOE_DOMAIN = "10YRO-TEL------P"
 
@@ -227,9 +227,15 @@ class OpcomSource:
     def _extract_values(table) -> list[float]:
         """Extrage cele 96 de prețuri, sărind agregatele și antetele.
 
-        Euristica: prețurile sunt singurele celule cu zecimale, iar prima celulă
-        cu zecimale de pe fiecare rând este agregatul zilnic al indicatorului.
-        Rândul cu cele mai multe prețuri este seria de intervale.
+        Euristica: prețurile sunt singurele celule cu zecimale. Tabelul nu ține
+        seria într-un singur rând -- OPCOM îl împarte în jumătăți (o dată
+        pentru intervalele 1-48, o dată pentru 49-96), fiecare pe rândul
+        propriului indicator (Base / Off Peak), cu un rând intermediar care
+        repetă doar numerele de coloană ca antet secundar. Fiecare rând de date
+        începe cu agregatul zilnic al indicatorului lui, urmat de feliei lui de
+        interval; un rând care nu are decât agregatul (sau nimic) nu contribuie
+        cu niciun interval. Concatenarea în ordinea rândurilor din tabel
+        reconstituie seria completă indiferent câte rânduri o compun.
 
         DE VERIFICAT ÎNAINTE DE PRODUCȚIE: euristica a fost construită dintr-o
         randare textuală a paginii, nu din DOM-ul real. Dacă structura diferă,
@@ -237,7 +243,7 @@ class OpcomSource:
         între timp, pentru că orice parsare care nu dă 92/96/100 valori
         plauzibile ridică PriceError și trece pe ENTSO-E.
         """
-        best: list[float] = []
+        values: list[float] = []
         for row in table.find_all("tr"):
             numbers: list[float] = []
             for cell in row.find_all(["td", "th"]):
@@ -247,16 +253,14 @@ class OpcomSource:
                 value = parse_ro_number(text)
                 if value is not None:
                     numbers.append(value)
-            if len(numbers) > len(best):
-                best = numbers
+            # Un rând de antet rătăcit sau o valoare izolată nu e o felie de
+            # serie; pragul e sub cea mai mică jumătate posibilă (46 = 92/2).
+            if len(numbers) > 2:
+                values.extend(numbers[1:])
 
-        if len(best) < min(VALID_MTU_COUNTS):
-            raise PriceError(f"opcom: doar {len(best)} prețuri găsite în tabel")
-
-        # Prima valoare a rândului e agregatul zilnic al indicatorului.
-        if len(best) - 1 in VALID_MTU_COUNTS:
-            best = best[1:]
-        return best
+        if len(values) < min(VALID_MTU_COUNTS):
+            raise PriceError(f"opcom: doar {len(values)} prețuri găsite în tabel")
+        return values
 
 
 # --------------------------------------------------------------------------
