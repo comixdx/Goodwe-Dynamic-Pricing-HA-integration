@@ -66,10 +66,20 @@ BATTERY_SOC = "battery_soc"
 # resets its "_day" counters when it wakes up, which would otherwise show as a
 # reset at sunrise rather than at midnight. With a battery attached the inverter
 # stays awake and resets them itself.
-DAILY_RESET = ["e_day", "e_load_day"]
+DAILY_RESET = [
+    "e_day",
+    "e_load_day",
+    "e_day_exp",
+    "e_day_imp",
+    "e_bat_charge_day",
+    "e_bat_discharge_day",
+]
 
 # Everything else is filed under diagnostics, so the device page opens on the
-# handful of figures people actually look at.
+# handful of figures people actually look at. Energy (kWh) sensors are always
+# exempt regardless of this list: the Energy Dashboard picker excludes
+# diagnostic entities, and every kWh counter the library exposes needs to be
+# selectable there, not just the handful named below.
 _MAIN_SENSORS = (
     "ppv",
     "house_consumption",
@@ -228,7 +238,9 @@ class InverterSensor(CoordinatorEntity[GoodweEmsCoordinator], SensorEntity):
         self._attr_unique_id = f"{DOMAIN}-{sensor.id_}-{inverter.serial_number}"
         self._attr_device_info = device_info
         self._attr_entity_category = (
-            EntityCategory.DIAGNOSTIC if sensor.id_ not in _MAIN_SENSORS else None
+            None
+            if sensor.id_ in _MAIN_SENSORS or sensor.unit == "kWh"
+            else EntityCategory.DIAGNOSTIC
         )
         try:
             self.entity_description = _DESCRIPTIONS[sensor.unit]
