@@ -4,14 +4,16 @@ Sub SDAC, PZU a trecut la MTU de 15 minute: OPCOM publică ROPEX_DAM_15min cu
 96 de valori pe zi de livrare (92 sau 100 în zilele de schimbare a orei).
 „Prețul orar" afișat în card este media aritmetică a patru sferturi de oră.
 
-Sursa primară e OPCOM (lei/MWh, prin scraping HTML), rezerva e ENTSO-E
-(EUR/MWh, prin API XML). Pentru dispecerizare contează doar ordinea relativă
-intra-zi, deci nu se face conversie valutară; cursul afectează doar afișarea.
+Sursa primară e OPCOM (lei/MWh, prin exportul CSV al raportului PIP), rezerva
+e ENTSO-E (EUR/MWh, prin API XML). Pentru dispecerizare contează doar ordinea
+relativă intra-zi, deci nu se face conversie valutară; cursul afectează doar
+afișarea.
 """
 
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -27,6 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 RO_TZ = ZoneInfo("Europe/Bucharest")
 
 OPCOM_HOME = "https://www.opcom.ro/acasa/ro"
+OPCOM_PIP_EXPORT_CSV = "https://www.opcom.ro/rapoarte-pzu-raportPIP-export-csv/{day:02d}/{month:02d}/{year}/ro"
 ENTSOE_API = "https://web-api.tp.entsoe.eu/api"
 ENTSOE_DOMAIN = "10YRO-TEL------P"
 
@@ -166,11 +169,14 @@ class PriceSeries:
 
 
 class OpcomSource:
-    """Citește tabelul ROPEX_DAM_15min de pe pagina principală OPCOM.
+    """Citește exportul CSV al raportului PIP (Preț de Închidere a Pieței).
 
-    Fragil prin natura lui: e HTML scraping, nu API. Orice schimbare de layout
-    ridică `PriceError`, ceea ce declanșează rezerva ENTSO-E — niciodată o
-    întoarcere silențioasă de date parțiale.
+    Interoghează explicit ziua de livrare cerută, prin URL, nu pagina
+    principală: widget-ul de acolo arată ziua curentă doar de la miezul
+    nopții până se publică rezultatul licitației de a doua zi (de regulă la
+    prânz), după care arată ziua următoare -- inutilizabil ca sursă pentru
+    „azi" în restul zilei. Exportul CSV întoarce oricând exact ziua cerută,
+    sau un răspuns gol dacă ziua încă nu a fost licitată.
     """
 
     name = "opcom"
@@ -178,26 +184,37 @@ class OpcomSource:
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
 
-    async def async_fetch(self) -> PriceSeries:
-        return self._parse(await self._get(OPCOM_HOME))
+    async def async_fetch(self, day: date | None = None) -> PriceSeries:
+        day = day or datetime.now(RO_TZ).date()
+        url = OPCOM_PIP_EXPORT_CSV.format(day=day.day, month=day.month, year=day.year)
+        text = await self._get(url)
+        return self._parse(text, day)
 
     async def _get(self, url: str) -> str:
         async with self._session.get(
             url,
+            params={"resolution": "15"},
             headers={"User-Agent": USER_AGENT},
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             resp.raise_for_status()
             return await resp.text()
 
-    def _parse(self, html: str) -> PriceSeries:
-        soup = BeautifulSoup(html, "html.parser")
-        table = self._find_table(soup)
-        if table is None:
-            raise PriceError("opcom: tabelul ROPEX_DAM_15min nu a fost găsit")
+    def _parse(self, text: str, requested_day: date) -> PriceSeries:
+        rows = list(csv.reader(text.splitlines()))
+        if not rows or not rows[0]:
+            raise PriceError(
+                f"opcom: răspuns gol pentru {requested_day.isoformat()} "
+                "(ziua nu a fost încă licitată?)"
+            )
 
-        day = self._extract_delivery_day(table)
-        values = self._extract_values(table)
+        day = self._extract_delivery_day(rows[0][0])
+        if day != requested_day:
+            raise PriceError(
+                f"opcom: exportul întoarce ziua {day}, s-a cerut {requested_day}"
+            )
+
+        values = self._extract_values(rows)
 
         return PriceSeries(
             day=day,
@@ -208,58 +225,41 @@ class OpcomSource:
         )
 
     @staticmethod
-    def _find_table(soup: BeautifulSoup):
-        for table in soup.find_all("table"):
-            if "ROPEX_DAM" in table.get_text():
-                return table
-        return None
-
-    @staticmethod
-    def _extract_delivery_day(table) -> date:
-        text = table.get_text(" ", strip=True)
-        match = re.search(r"[Zz]iua de livrare\s*:?\s*(\d{1,2})[/.](\d{1,2})[/.](\d{4})", text)
+    def _extract_delivery_day(title: str) -> date:
+        match = re.search(r"(\d{1,2})[/.](\d{1,2})[/.](\d{4})", title)
         if not match:
-            raise PriceError("opcom: ziua de livrare nu a putut fi citită")
+            raise PriceError("opcom: ziua de livrare nu a putut fi citită din export")
         d, m, y = (int(g) for g in match.groups())
         return date(y, m, d)
 
     @staticmethod
-    def _extract_values(table) -> list[float]:
-        """Extrage cele 96 de prețuri, sărind agregatele și antetele.
+    def _extract_values(rows: list[list[str]]) -> list[float]:
+        """Preț pe interval, din rândurile de sub antetul cu coloana `Interval`.
 
-        Euristica: prețurile sunt singurele celule cu zecimale. Tabelul nu ține
-        seria într-un singur rând -- OPCOM îl împarte în jumătăți (o dată
-        pentru intervalele 1-48, o dată pentru 49-96), fiecare pe rândul
-        propriului indicator (Base / Off Peak), cu un rând intermediar care
-        repetă doar numerele de coloană ca antet secundar. Fiecare rând de date
-        începe cu agregatul zilnic al indicatorului lui, urmat de feliei lui de
-        interval; un rând care nu are decât agregatul (sau nimic) nu contribuie
-        cu niciun interval. Concatenarea în ordinea rândurilor din tabel
-        reconstituie seria completă indiferent câte rânduri o compun.
-
-        DE VERIFICAT ÎNAINTE DE PRODUCȚIE: euristica a fost construită dintr-o
-        randare textuală a paginii, nu din DOM-ul real. Dacă structura diferă,
-        e o singură metodă de rescris; `PriceSeries.__post_init__` protejează
-        între timp, pentru că orice parsare care nu dă 92/96/100 valori
-        plauzibile ridică PriceError și trece pe ENTSO-E.
+        Spre deosebire de tabelul HTML de pe pagina principală, exportul e o
+        listă simplă -- o zonă de tranzacționare pe rând, în ordinea
+        intervalelor -- fără agregate de sărit sau rânduri de despărțit.
+        Numerele sunt cu punct zecimal, nu cu virgulă ca pe restul site-ului.
         """
+        start = None
+        for i, row in enumerate(rows):
+            if row and row[0].strip().lower() == "zona de tranzactionare":
+                start = i + 1
+                break
+        if start is None:
+            raise PriceError("opcom: antetul coloanelor nu a fost găsit în export")
+
         values: list[float] = []
-        for row in table.find_all("tr"):
-            numbers: list[float] = []
-            for cell in row.find_all(["td", "th"]):
-                text = cell.get_text(strip=True)
-                if "," not in text:
-                    continue  # întregi = numere de interval, se sar
-                value = parse_ro_number(text)
-                if value is not None:
-                    numbers.append(value)
-            # Un rând de antet rătăcit sau o valoare izolată nu e o felie de
-            # serie; pragul e sub cea mai mică jumătate posibilă (46 = 92/2).
-            if len(numbers) > 2:
-                values.extend(numbers[1:])
+        for row in rows[start:]:
+            if len(row) < 3:
+                break
+            try:
+                values.append(float(row[2]))
+            except ValueError:
+                raise PriceError(f"opcom: preț ilizibil în export: {row[2]!r}") from None
 
         if len(values) < min(VALID_MTU_COUNTS):
-            raise PriceError(f"opcom: doar {len(values)} prețuri găsite în tabel")
+            raise PriceError(f"opcom: doar {len(values)} prețuri găsite în export")
         return values
 
 
@@ -392,7 +392,7 @@ class PzuPriceCoordinator:
             errors: list[str] = []
 
             try:
-                series = await self._primary.async_fetch()
+                series = await self._primary.async_fetch(today)
             except (PriceError, aiohttp.ClientError, asyncio.TimeoutError) as err:
                 errors.append(f"opcom: {err}")
             else:
